@@ -56,6 +56,12 @@ The main script for generating features is `generate_features.sh`. It accepts fo
 
 ### Usage
 
+First make it executable:
+
+```bash
+chmod +x generate_features.sh
+```
+
 The script is executed as follows:
 
 ```bash
