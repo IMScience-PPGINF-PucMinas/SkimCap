@@ -1,0 +1,10 @@
+#ter os dois modelos resnet e vgg, mas aceitar também features puras
+#metodos de hierarquia tem 4 continuar com esses
+
+#caminho sem passar pela extracao com resnet/vgg
+
+#<100 frames manter original else 15%
+
+#fazer feature pra feature primeiro
+#depois fazer video pra feature
+NGJREKGEJR

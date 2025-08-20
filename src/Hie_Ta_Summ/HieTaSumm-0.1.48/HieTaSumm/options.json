@@ -1,0 +1,13 @@
+{
+    "video_path": "./videos",
+    "summary_path": "./summary",
+    "percent": 15,
+    "alpha": 75,
+    "rate": 4,
+    "time": 8,
+    "hierarchy": "watershed_hierarchy_by_area",
+    "selected_model": "resnet50",
+    "is_binary": true,
+    "gen_summary_method": {"method": "group_central_frames", "n_keyframes": 7}
+  }
+  

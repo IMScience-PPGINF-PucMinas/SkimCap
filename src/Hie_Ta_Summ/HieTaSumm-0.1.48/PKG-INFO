@@ -1,0 +1,8 @@
+Metadata-Version: 2.1
+Name: HieTaSumm
+Version: 0.1.48
+Summary: A hierarchical approach for video summarization
+Author: Leonardo Vilela
+Author-email: leonardo.cardoso.794229@sga.pucminas.br
+License: MIT Licence
+Keywords: summarization hierarchy graph

@@ -1,0 +1,1 @@
+# hierarchical approach for video summarization
