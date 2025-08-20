@@ -42,6 +42,12 @@ source venv/bin/activate
 
 Your command prompt should now be prefixed with `(venv)`, indicating that the virtual environment is active.
 
+### Clone the repository
+
+```bash
+git clone git@github.com:IMScience-PPGINF-PucMinas/SkimCap-features.git
+```
+
 ### Install Dependencies
 
 With the virtual environment active, install the required Python packages using the `requirements.txt` file:
