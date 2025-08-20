@@ -89,7 +89,6 @@ bash generate_features.sh \
 
 This command will:
 
-- Use the summary located at `./data/input_summary.txt`
-- Use the hierarchy definition from `./config/hierarchy.json`
-- Apply the `mean` method for summary generation
-- Save the resulting features to `./output/features.csv`
+- Use the summary located at `path/to/recurrent-transformer/video_feature/rt_anet_feat/trainval`
+- Use the hierarchy definition watershed_hierarchy_by_area
+- Apply the `group_sparse_central_features` method for summary generation
