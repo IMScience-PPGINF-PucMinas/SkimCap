@@ -72,15 +72,19 @@ bash generate_features.sh [features_path] [summary_path] [gen_summary_method] [h
 
 - **`features_path`**: (String) The file path where the output features will be saved.
 - **`summary_path`**: (String) The file path to the input summary file.
-- **`gen_summary_method`**: (String) The method to be used for generating the summary.
-- **`hierarchy`**: (String) The path to the hierarchy file.
+- **`gen_summary_method`**: (String) The method to be used for generating the summary. Options: group_sparse_central_features and group_central_frames 
+- **`hierarchy`**: (String) The path to the hierarchy file. Options: watershed_hierarchy_by_attribute, watershed_hierarchy_by_minima_ordering, watershed_hierarchy_by_volume, watershed_hierarchy_by_area, watershed_hierarchy_by_dynamics, watershed_hierarchy_by_number_of_parents
 
 ### Example
 
 Here is an example of how to run the script with all the required arguments:
 
 ```bash
-bash generate_features.sh ./output/features.csv ./data/input_summary.txt 'mean' ./config/hierarchy.json
+bash generate_features.sh \
+    path/to/recurrent-transformer/video_feature/rt_anet_feat/trainval \
+    path/to/skim-8-vgg \
+    group_sparse_central_features \
+    watershed_hierarchy_by_area
 ```
 
 This command will:
