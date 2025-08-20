@@ -51,6 +51,7 @@ git clone git@github.com:IMScience-PPGINF-PucMinas/SkimCap-features.git
 ### Install Dependencies
 
 With the virtual environment active, install the required Python packages using the `requirements.txt` file:
+(Note that this file is inside the folder SkimCap-features/src)
 
 ```bash
 pip install -r requirements.txt
