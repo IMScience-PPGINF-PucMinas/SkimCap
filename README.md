@@ -1,9 +1,10 @@
-Papper Name
+SkimCap: A Transformer-Based Video Captioning Method with Adaptive Attention and Hierarchical Skimming Features
 =====
-Some introduction, title and author's name, 
+PyTorch code for our PRL 2025 paper "SkimCap: A Transformer-Based Video Captioning Method with Adaptive Attention and Hierarchical Skimming Features" Enhanced
+by [Leonardo Vilela Cardoso](http://lattes.cnpq.br/6741312586742178), Bernardo Palmer, [Silvio Jamil F. Guimarães](http://lattes.cnpq.br/8522089151904453) and 
+[Zenilton K. G. Patrocínio Jr](http://lattes.cnpq.br/8895634496108399), 
 
-
-Abstract of your Papper
+We present SkimCap, a transformer-based video captioning framework that integrates a memory-augmented architecture with adaptive attention and a novel feature selection strategy grounded in hierarchical video skimming. Unlike traditional approaches that rely on uniformly sampled frames or pre-defined temporal segments, SkimCap performs unsupervised hierarchical clustering to identify and extract semantically salient video shots. These condensed representations provide a compact yet information-rich input to the captioning model, enabling more accurate and contextually grounded sentence generation. The memory module enhances long-range dependency modeling, while adaptive attention improves temporal alignment between visual cues and generated tokens. We evaluate SkimCap on ActivityNet, achieving CIDEr-D of 25.44, a BLEU-4 (B@4) of 10.77, and a lower Repetition-4 (R@4) score of 5.84, representing consistent caption quality and relevance improvements. An ablation study confirms the effectiveness of hierarchical skimming as a feature selection mechanism, highlighting its contribution to overall performance. SkimCap sets a new direction for incorporating structured visual summarization into end-to-end captioning systems.
 
 ## Getting started
 ### Prerequisites
