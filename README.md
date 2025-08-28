@@ -11,15 +11,22 @@ We present SkimCap, a transformer-based video captioning framework that integrat
 0. Clone this repository
 ```
 # no need to add --recursive as all dependencies are copied into this repo.
-git clone "your_github_url"
-cd "your_method"
+git clone https://github.com/IMScience-PPGINF-PucMinas/Adaptive-Transformer.git
+cd Adaptive-Transformer
 ```
 
 1. Prepare feature files
 
-Some details of where the dataset is found or how the dataset will be generated
+Download features from Google Drive: [rt_anet_feat.tar.gz (39GB)](https://drive.google.com/file/d/1mbTmMOFWcO30PIcuSpYiZ1rqoy5ltE3A/view?usp=sharing) 
+and [rt_yc2_feat.tar.gz (12GB)](https://drive.google.com/file/d/1mj76DwNexFCYovUt8BREeHccQn_z_By9/view?usp=sharing).
+These features are repacked from features provided by [densecap](https://github.com/salesforce/densecap#annotation-and-feature). 
+```
+mkdir video_feature && cd video_feature
+tar -xf path/to/rt_anet_feat.tar.gz 
+tar -xf path/to/rt_yc2_feat.tar.gz 
+```
 
-2. Install dependencies (for example)
+2. Install dependencies
 - Python 2.7
 - PyTorch 1.1.0
 - nltk
@@ -27,42 +34,95 @@ Some details of where the dataset is found or how the dataset will be generated
 - tqdm
 - tensorboardX
 
+3. Add project root to `PYTHONPATH`
+```
+source setup.sh
+```
+Note that you need to do this each time you start a new session.
+
+
 ### Training and Inference
-We give examples on how to perform training and inference with "your_method".
+We give examples on how to perform training and inference with Adaptive-Transformer.
+
+0. Build Vocabulary
+```
+bash scripts/build_vocab.sh
+```
+`DATASET_NAME` can be `anet` for ActivityNet Captions or `yc2` for YouCookII.
 
 
-1. "your_method" training
+1. Adaptive-Transformer training
 
 The general training command is:
 ```
 bash scripts/train.sh
 ```
 
-To train our "your_method" model on "dataset":
+To train our Adaptive-Transformer model on ActivityNet Captions:
 ```
 bash scripts/train.sh anet
 ```
 
-2. "your_github_url" test
+Training log and model will be saved at `results/anet_re_*`.  
+Once you have a trained model, you can follow the instructions below to generate captions. 
 
-The general test command is:
-```
-bash scripts/test.sh
-```
 
-The results should be comparable with the results we present at Table "number" of the paper. 
-E.g., "your_results".
+2. Generate captions 
+```
+bash scripts/translate_greedy.sh anet_re_* val
+```
+Replace `anet_re_*` with your own model directory name. 
+The generated captions are saved at `results/anet_re_*/greedy_pred_val.json`
+
+
+3. Evaluate generated captions
+```
+bash scripts/eval.sh anet val results/anet_re_*/greedy_pred_val.json
+```
+The results should be comparable with the results we present at Table 2 of the paper. 
+E.g., B@4 10.77; C 25.44 R@4 5.84.
 
 ## Citations
-If you find this code useful for your research, consider cite our paper:
+If you find this code useful for your research, consider citing one of our papers:
 ```
-"your_bibtex_code"
+@article{cardoso2023hierarchical,
+  title={Hierarchical time-aware summarization with an adaptive transformer for video captioning},
+  author={Cardoso, Leonardo Vilela and Guimar{\~a}es, Silvio Jamil Ferzoli and do Patroc{\'\i}nio J{\'u}nior, Zenilton Kleber Gon{\c{c}}alves},
+  journal={International Journal of Semantic Computing},
+  volume={17},
+  number={04},
+  pages={569--592},
+  year={2023},
+  publisher={World Scientific}
+}
+@inproceedings{cardoso2022exploring,
+  title={Exploring adaptive attention in memory transformer applied to coherent video paragraph captioning},
+  author={Cardoso, Leonardo Vilela and Guimaraes, Silvio Jamil F and Patrocinio, Zenilton KG},
+  booktitle={2022 IEEE Eighth International Conference on Multimedia Big Data (BigMM)},
+  pages={37--44},
+  year={2022},
+  organization={IEEE}
+}
+
+@inproceedings{cardoso2021enhanced,
+  title={Enhanced-Memory Transformer for Coherent Paragraph Video Captioning},
+  author={Cardoso, Leonardo Vilela and Guimaraes, Silvio Jamil F and Patroc{\'\i}nio, Zenilton KG},
+  booktitle={2021 IEEE 33rd International Conference on Tools with Artificial Intelligence (ICTAI)},
+  pages={836--840},
+  year={2021},
+  organization={IEEE}
+}
 ```
 
 ## Others
 This code used resources from the following projects: 
-[method_name]("url_from_the_code").
+[emt](https://github.com/IMScience-PPGINF-PucMinas/EMT),
+[mart](https://github.com/jayleicn/recurrent-transformer),
+[transformers](https://github.com/huggingface/transformers), 
+[transformer-xl](https://github.com/kimiyoung/transformer-xl), 
+[densecap](https://github.com/salesforce/densecap),
+[OpenNMT-py](https://github.com/OpenNMT/OpenNMT-py).
 
 ## Contact
-"your_name" with this e-mail: "your_email"
+Leonardo Vilela Cardoso with this e-mail: lvcardoso@sga.pucminas.br
 
