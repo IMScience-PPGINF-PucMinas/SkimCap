@@ -27,8 +27,8 @@ tar -xf path/to/rt_yc2_feat.tar.gz
 ```
 
 2. Install dependencies
-- Python 2.7
-- PyTorch 1.1.0
+- Python 3.9
+- PyTorch 2.4.1
 - nltk
 - easydict
 - tqdm
