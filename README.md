@@ -16,7 +16,7 @@ Developed, checked and verified on an `Ubuntu 22.04` PC with a `GTX 1080 SUPER` 
 <div align="justify">
 Original videos and annotations for each dataset are also available in the dataset providers' webpages:
 <br />
-- <a href="http://activity-net.org/"><img src="https://img.shields.io/badge/Dataset-ActivityNet-green"/></a> <a href="http://youcook2.eecs.umich.edu/"><img src="https://img.shields.io/badge/Dataset-YouCookII-blue"/></a>
+<a href="http://activity-net.org/"><img src="https://img.shields.io/badge/Dataset-ActivityNet-green"/></a> <a href="http://youcook2.eecs.umich.edu/"><img src="https://img.shields.io/badge/Dataset-YouCookII-blue"/></a>
 </div>
 
 ## Getting started
