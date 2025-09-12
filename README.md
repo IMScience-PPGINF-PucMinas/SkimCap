@@ -30,7 +30,7 @@ cd Adaptive-Transformer
 
 1. Prepare feature files
 
-Download features from Google Drive: [rt_anet_feat.tar.gz (39GB)](https://drive.google.com/file/d/1mbTmMOFWcO30PIcuSpYiZ1rqoy5ltE3A/view?usp=sharing) 
+Download features from Google Drive: [rt_anet_feat.tar.gz (39GB)]([https://drive.google.com/file/d/1mbTmMOFWcO30PIcuSpYiZ1rqoy5ltE3A/view?usp=sharing](https://drive.google.com/file/d/1w1ax0DpNPkFU24Eo87coWdasLa9R8Vby/view?usp=sharing)) 
 and [rt_yc2_feat.tar.gz (12GB)](https://drive.google.com/file/d/1mj76DwNexFCYovUt8BREeHccQn_z_By9/view?usp=sharing).
 These features are repacked from features provided by [densecap](https://github.com/salesforce/densecap#annotation-and-feature). 
 ```
