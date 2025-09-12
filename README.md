@@ -6,6 +6,18 @@ by [Leonardo Vilela Cardoso](http://lattes.cnpq.br/6741312586742178), Bernardo P
 
 We present SkimCap, a transformer-based video captioning framework that integrates a memory-augmented architecture with adaptive attention and a novel feature selection strategy grounded in hierarchical video skimming. Unlike traditional approaches that rely on uniformly sampled frames or pre-defined temporal segments, SkimCap performs unsupervised hierarchical clustering to identify and extract semantically salient video shots. These condensed representations provide a compact yet information-rich input to the captioning model, enabling more accurate and contextually grounded sentence generation. The memory module enhances long-range dependency modeling, while adaptive attention improves temporal alignment between visual cues and generated tokens. We evaluate SkimCap on ActivityNet, achieving CIDEr-D of 25.44, a BLEU-4 (B@4) of 10.77, and a lower Repetition-4 (R@4) score of 5.84, representing consistent caption quality and relevance improvements. An ablation study confirms the effectiveness of hierarchical skimming as a feature selection mechanism, highlighting its contribution to overall performance. SkimCap sets a new direction for incorporating structured visual summarization into end-to-end captioning systems.
 
+## Main dependencies
+Developed, checked and verified on an `Ubuntu 22.04` PC with a `GTX 1080 SUPER` GPU. Main packages required:
+|`Python` | `PyTorch` | `CUDA Version` | `cuDNN Version` | `TensorBoard` | `TensorFlow` | `NumPy` | `H5py`
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+3.9 | 2.4.1 | 11.0 | 8005 | 2.4.1 | 2.3.0 | 1.20.2 | 2.10.0
+
+## Data
+<div align="justify">
+Original videos and annotations for each dataset are also available in the dataset providers' webpages: 
+- <a href="http://activity-net.org/"><img src="https://img.shields.io/badge/Dataset-ActivityNet-green"/></a> <a href="http://youcook2.eecs.umich.edu/"><img src="https://img.shields.io/badge/Dataset-YouCookII-blue"/></a>
+</div>
+
 ## Getting started
 ### Prerequisites
 0. Clone this repository
