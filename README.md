@@ -1,6 +1,6 @@
 SkimCap: A Transformer-Based Video Captioning Method with Adaptive Attention and Hierarchical Skimming Features
 =====
-PyTorch code for our PRL 2025 paper "SkimCap: A Transformer-Based Video Captioning Method with Adaptive Attention and Hierarchical Skimming Features" Enhanced
+PyTorch code for our Sibgrapi 2025 paper "SkimCap: A Transformer-Based Video Captioning Method with Adaptive Attention and Hierarchical Skimming Features" Enhanced
 by [Leonardo Vilela Cardoso](http://lattes.cnpq.br/6741312586742178), Bernardo Palmer, [Silvio Jamil F. Guimarães](http://lattes.cnpq.br/8522089151904453) and 
 [Zenilton K. G. Patrocínio Jr](http://lattes.cnpq.br/8895634496108399), 
 
