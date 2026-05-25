@@ -15,6 +15,7 @@ from src.utils import load_json, flat_list_of_lists
 log_format = "%(asctime)-10s: %(message)s"
 logging.basicConfig(level=logging.INFO, format=log_format)
 
+logger = logging.getLogger(__name__)
 
 class RecursiveCaptionDataset(Dataset):
     PAD_TOKEN = "[PAD]"  # padding of the whole sequence, note
