@@ -632,10 +632,16 @@ def main():
     if opt.glove_path is not None:
         if hasattr(model, "embeddings"):
             logger.info("Load GloVe as word embedding")
+
             model.embeddings.set_pretrained_embedding(
-                torch.from_numpy(torch.load(opt.glove_path)).float(), freeze=opt.freeze_glove)
-        else:
-            logger.warning("This model has no embeddings, cannot load glove vectors into the model")
+                torch.from_numpy(
+                    torch.load(opt.glove_path, weights_only=False)
+                ).float(),
+                freeze=opt.freeze_glove
+            )
+
+    else:
+        logger.warning("This model has no embeddings, cannot load glove vectors into the model")
 
     count_parameters(model)
     if hasattr(model, "embeddings") and hasattr(model.embeddings, "word_embeddings"):
