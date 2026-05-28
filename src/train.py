@@ -492,7 +492,7 @@ def get_args():
     parser.add_argument("--no_cuda", action="store_true", help="run on cpu")
     parser.add_argument("--seed", default=2019, type=int)
     parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--eval_tool_dir", type=str, default="./densevid_eval/")
+    parser.add_argument("--eval_tool_dir", type=str, default="/home/822497/recurrent-transformer/densevid_eval/")
 
     opt = parser.parse_args()
     opt.cuda = not opt.no_cuda

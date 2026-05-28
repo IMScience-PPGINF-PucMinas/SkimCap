@@ -1,37 +1,13 @@
-"""
-Recursive Transformer for dense video captioning.
-
-Classes exported:
-    LabelSmoothingLoss       – training loss with label smoothing
-    RecursiveTransformer     – main recurrent captioning model
-    base_config              – default hyper-parameter dict
-
-Internal building blocks (not intended for external use):
-    PositionEncoding, BertLayerNorm, BertSelfAttention, BertSelfOutput,
-    BertAttention, BertIntermediate, BertOutput, BertLayerWithMemory,
-    BertEncoderWithMemory, BertEmbeddingsWithVideo,
-    MemoryInitializer, MemoryUpdater,
-    BertPredictionHeadTransform, BertLMPredictionHead
-"""
-
 from __future__ import annotations
-
 import math
 from typing import Optional
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from easydict import EasyDict as edict
-
 import logging
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Loss
-# ---------------------------------------------------------------------------
 
 class LabelSmoothingLoss(nn.Module):
     """KL-divergence loss with label smoothing.
@@ -74,19 +50,9 @@ class LabelSmoothingLoss(nn.Module):
         model_prob.scatter_(1, target.unsqueeze(1), self.confidence)
         return F.kl_div(output, model_prob, reduction="sum")
 
-
-# ---------------------------------------------------------------------------
-# Activations
-# ---------------------------------------------------------------------------
-
 def gelu(x: torch.Tensor) -> torch.Tensor:
     """Gaussian Error Linear Unit (Hendrycks & Gimpel, 2016)."""
     return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
-
-
-# ---------------------------------------------------------------------------
-# Positional encoding
-# ---------------------------------------------------------------------------
 
 class PositionEncoding(nn.Module):
     """Sinusoidal positional encoding added to the last two dimensions of the input."""
@@ -116,11 +82,6 @@ class PositionEncoding(nn.Module):
             pe = pe.unsqueeze(0)
         return x + pe
 
-
-# ---------------------------------------------------------------------------
-# Layer normalisation (TF-style: epsilon inside sqrt)
-# ---------------------------------------------------------------------------
-
 class BertLayerNorm(nn.Module):
     def __init__(self, hidden_size: int, eps: float = 1e-12) -> None:
         super().__init__()
@@ -133,11 +94,6 @@ class BertLayerNorm(nn.Module):
         var = (x - mean).pow(2).mean(-1, keepdim=True)
         x = (x - mean) / torch.sqrt(var + self.eps)
         return self.weight * x + self.bias
-
-
-# ---------------------------------------------------------------------------
-# Attention
-# ---------------------------------------------------------------------------
 
 class BertSelfAttention(nn.Module):
     def __init__(self, config: edict) -> None:
@@ -196,7 +152,6 @@ class BertSelfAttention(nn.Module):
         N, Lq = context.shape[:2]
         return context.view(N, Lq, self.all_head_size)
 
-
 class BertSelfOutput(nn.Module):
     def __init__(self, config: edict) -> None:
         super().__init__()
@@ -206,7 +161,6 @@ class BertSelfOutput(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor) -> torch.Tensor:
         return self.LayerNorm(residual + self.dropout(self.dense(hidden_states)))
-
 
 class BertAttention(nn.Module):
     def __init__(self, config: edict) -> None:
@@ -224,7 +178,6 @@ class BertAttention(nn.Module):
         attn_out = self.self(x, x, x, attention_mask)
         return self.output(attn_out, x)
 
-
 class BertIntermediate(nn.Module):
     def __init__(self, config: edict) -> None:
         super().__init__()
@@ -232,7 +185,6 @@ class BertIntermediate(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return gelu(self.dense(x))
-
 
 class BertOutput(nn.Module):
     def __init__(self, config: edict) -> None:
@@ -244,40 +196,12 @@ class BertOutput(nn.Module):
     def forward(self, hidden_states: torch.Tensor, residual: torch.Tensor) -> torch.Tensor:
         return self.LayerNorm(residual + self.dropout(self.dense(hidden_states)))
 
-
-# ---------------------------------------------------------------------------
-# Attention mask helpers
-# ---------------------------------------------------------------------------
-
 def make_shifted_mask(
     input_mask: torch.Tensor,
     max_v_len: int,
     max_t_len: int,
     memory_len: int = 0,
 ) -> torch.Tensor:
-    """Build the causal attention mask for the joint (memory +) video + text sequence.
-
-    ``input_mask`` has length ``max_v_len + max_t_len + memory_len``.
-    The query dimension spans the video + text positions (``max_v_len + max_t_len``);
-    the key dimension spans all positions including any prepended memory tokens.
-
-    Attend rules:
-    - All query rows can see all memory and video key positions (full attention).
-    - Text query rows additionally see text key positions causally (lower-triangular).
-
-    Args:
-        input_mask: (N, max_v_len + max_t_len + memory_len)  — 1 = valid token.
-                    When memory_len == 0 this is just (N, max_v_len + max_t_len).
-                    When memory_len > 0 the caller must have prepended memory
-                    validity bits to input_mask before calling.
-        max_v_len:  video segment length (query dimension)
-        max_t_len:  text segment length  (query dimension)
-        memory_len: number of prepended memory tokens (key dimension only)
-
-    Returns:
-        (N, max_v_len + max_t_len, max_v_len + max_t_len + memory_len)
-        with 1 = attend, 0 = mask
-    """
     bsz, seq_len = input_mask.shape
     assert max_v_len + max_t_len + memory_len == seq_len, (
         f"input_mask length {seq_len} != "
@@ -295,52 +219,22 @@ def make_shifted_mask(
 
     return shifted
 
-
 def make_pad_shifted_mask(
     input_mask: torch.Tensor,
     max_v_len: int,
     max_t_len: int,
     memory_len: int = 0,
 ) -> torch.Tensor:
-    """Shifted mask further zeroed at padding positions in the key dimension.
-
-    When ``memory_len == 0`` the key padding comes directly from ``input_mask``.
-    When ``memory_len > 0`` the caller is expected to have prepended the memory
-    validity bits to ``input_mask`` already (memory slots are always valid).
-
-    Args:
-        input_mask: (N, memory_len + max_v_len + max_t_len)
-    Returns:
-        (N, max_v_len + max_t_len, memory_len + max_v_len + max_t_len)
-    """
     shifted = make_shifted_mask(input_mask, max_v_len, max_t_len, memory_len)
     # Zero columns that correspond to padding in the key sequence
     return shifted * input_mask.unsqueeze(1)
 
-
 def make_video_only_mask(input_mask: torch.Tensor, max_v_len: int) -> torch.Tensor:
-    """Return a copy of input_mask with text positions zeroed out.
-
-    Used to restrict memory initialisation to the video context.
-    """
     video_mask = input_mask.clone()
     video_mask[:, max_v_len:] = 0
     return video_mask
 
-
-# ---------------------------------------------------------------------------
-# Memory mechanism (expanded capacity)
-# ---------------------------------------------------------------------------
-
 class MemoryInitializer(nn.Module):
-    """Initialise recurrent memory cells from the video context.
-
-    Improvement over the original design: instead of a single global pooling
-    vector repeated ``n_memory_cells`` times, we learn ``n_memory_cells``
-    independent linear projections over the pooled context, giving each cell
-    a distinct initialisation subspace.
-    """
-
     def __init__(self, config: edict) -> None:
         super().__init__()
         self.n_memory_cells = config.n_memory_cells
@@ -358,14 +252,6 @@ class MemoryInitializer(nn.Module):
     def forward(
         self, input_states: torch.Tensor, attention_mask: torch.Tensor
     ) -> torch.Tensor:
-        """
-        Args:
-            input_states:   (N, L, D)
-            attention_mask: (N, L)   1 = valid
-
-        Returns:
-            (N, n_memory_cells, D)
-        """
         # Masked average pooling over valid positions
         denom = attention_mask.sum(1, keepdim=True).clamp(min=1)     # (N, 1)
         pooled = (input_states * attention_mask.unsqueeze(-1)).sum(1) # (N, D)
@@ -375,16 +261,7 @@ class MemoryInitializer(nn.Module):
         cells = [proj(pooled).unsqueeze(1) for proj in self.cell_projections]
         return torch.cat(cells, dim=1)  # (N, n_memory_cells, D)
 
-
 class MemoryUpdater(nn.Module):
-    """GRU-style recurrent update for the memory cells.
-
-    ``s_t``  – attention-based read from the current input context
-    ``c_t``  – candidate new content  (tanh gate)
-    ``z_t``  – interpolation gate     (sigmoid)
-    ``m_t``  – updated memory         = (1 - z_t) * c_t + z_t * prev_m
-    """
-
     def __init__(self, config: edict) -> None:
         super().__init__()
         self.memory_update_attention = BertSelfAttention(config)
@@ -403,15 +280,6 @@ class MemoryUpdater(nn.Module):
         input_states: torch.Tensor,
         attention_mask: torch.Tensor,
     ) -> torch.Tensor:
-        """
-        Args:
-            prev_m:         (N, M, D)  previous memory
-            input_states:   (N, L, D)  current step hidden states
-            attention_mask: (N, L)     1 = valid position
-
-        Returns:
-            updated_memory: (N, M, D)
-        """
         n_cells = prev_m.size(1)
         # Each memory cell attends over all valid input positions
         update_mask = attention_mask.unsqueeze(1).expand(-1, n_cells, -1)  # (N, M, L)
@@ -421,23 +289,7 @@ class MemoryUpdater(nn.Module):
         z_t = torch.sigmoid(self.mz(prev_m) + self.sz(s_t))
         return (1.0 - z_t) * c_t + z_t * prev_m
 
-
-# ---------------------------------------------------------------------------
-# Transformer layer with memory-augmented attention
-# ---------------------------------------------------------------------------
-
 class BertLayerWithMemory(nn.Module):
-    """Single transformer layer that reads from and writes to a memory bank.
-
-    Processing order per step:
-        1. Causal self-attention over (video + text) context
-        2. Initialise memory from video if this is the first step
-        3. Update memory cells via ``MemoryUpdater``
-        4. Memory-augmented cross-attention: current hidden states attend to
-           (prev_memory ∥ current_context)
-        5. Feed-forward + residual
-    """
-
     def __init__(self, config: edict) -> None:
         super().__init__()
         self.config = config
@@ -455,40 +307,23 @@ class BertLayerWithMemory(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            prev_m:         (N, M, D) or None on the first recurrent step
-            hidden_states:  (N, L, D)
-            attention_mask: (N, L)    1 = valid
-
-        Returns:
-            updated_m:     (N, M, D)
-            layer_output:  (N, L, D)
-        """
         max_v_len = self.config.max_v_len
         max_t_len = self.config.max_t_len
 
-        # 1. Causal self-attention (video tokens see all; text tokens are causal)
         shifted_mask = make_pad_shifted_mask(attention_mask, max_v_len, max_t_len)
         attention_output = self.attention(hidden_states, shifted_mask)
 
-        # 2. Intermediate projection (feeds both memory and output paths)
         intermediate_output = self.hidden_intermediate(attention_output)
 
-        # 3. Initialise or update memory
         if prev_m is None:
             init_mask = make_video_only_mask(attention_mask, max_v_len)
             prev_m = self.memory_initializer(intermediate_output, init_mask)
 
         updated_m = self.memory_updater(prev_m, intermediate_output, attention_mask)
 
-        # 4. Memory-augmented attention:
-        #    query  = current intermediate states
-        #    key/value = concat(prev_memory, intermediate_states)
         bsz, n_cells = prev_m.shape[:2]
         concat_mh = torch.cat([prev_m, intermediate_output], dim=1)  # (N, M+L, D)
 
-        # Build attention mask that includes the memory slots (always visible)
         mem_ones = attention_mask.new_ones(bsz, n_cells)
         raw_mem_mask = torch.cat([mem_ones, attention_mask], dim=1)  # (N, M+L)
         mem_attn_mask = make_pad_shifted_mask(
@@ -498,16 +333,12 @@ class BertLayerWithMemory(nn.Module):
             intermediate_output, concat_mh, concat_mh, mem_attn_mask
         )
 
-        # 5. Project back to hidden_size and apply residual + layer norm
         mem_attn_out = self.memory_projection(mem_attn_out)
         layer_output = self.output(mem_attn_out, attention_output)
 
         return updated_m, layer_output
 
-
 class BertEncoderWithMemory(nn.Module):
-    """Stack of ``BertLayerWithMemory`` layers sharing a single memory bank."""
-
     def __init__(self, config: edict) -> None:
         super().__init__()
         self.layers = nn.ModuleList(
@@ -521,17 +352,6 @@ class BertEncoderWithMemory(nn.Module):
         attention_mask: torch.Tensor,
         output_all_encoded_layers: bool = True,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-        """
-        Args:
-            prev_ms:        list of length num_hidden_layers; each element is
-                            (N, M, D) or None (first step)
-            hidden_states:  (N, L, D)
-            attention_mask: (N, L)
-
-        Returns:
-            updated_ms:        list[(N, M, D)] * num_hidden_layers
-            all_encoder_layers: list[(N, L, D)] – one per layer (or just the last)
-        """
         all_encoder_layers: list[torch.Tensor] = []
         for i, layer in enumerate(self.layers):
             prev_ms[i], hidden_states = layer(prev_ms[i], hidden_states, attention_mask)
@@ -541,20 +361,7 @@ class BertEncoderWithMemory(nn.Module):
             all_encoder_layers.append(hidden_states)
         return prev_ms, all_encoder_layers
 
-
-# ---------------------------------------------------------------------------
-# Embeddings
-# ---------------------------------------------------------------------------
-
 class BertEmbeddingsWithVideo(nn.Module):
-    """Fuse word, video and token-type embeddings into a single sequence.
-
-    The joint sequence is laid out as ``[video tokens | text tokens]``.
-    Video feature vectors are projected into the model dimension and added to
-    the word embeddings at each position, allowing the model to see both
-    modalities in a single unified sequence.
-    """
-
     def __init__(self, config: edict, add_position_embeddings: bool = True) -> None:
         super().__init__()
         self.add_position_embeddings = add_position_embeddings
@@ -590,9 +397,7 @@ class BertEmbeddingsWithVideo(nn.Module):
     def set_pretrained_embedding(
         self, pretrained_embedding: torch.Tensor, freeze: bool = True
     ) -> None:
-        """Replace the word embedding table with pre-trained vectors (e.g. GloVe)."""
         assert pretrained_embedding.shape == self.word_embeddings.weight.shape, (
-            "Pre-trained embedding shape must match the current embedding table."
         )
         self.word_embeddings = nn.Embedding.from_pretrained(
             pretrained_embedding,
@@ -606,15 +411,6 @@ class BertEmbeddingsWithVideo(nn.Module):
         video_features: torch.Tensor,
         token_type_ids: torch.Tensor,
     ) -> torch.Tensor:
-        """
-        Args:
-            input_ids:      (N, L)
-            video_features: (N, L, D_v)  – zeros at text positions
-            token_type_ids: (N, L)        – 0 for video, 1 for text
-
-        Returns:
-            (N, L, D)
-        """
         word_emb = self.word_fc(self.word_embeddings(input_ids))
         vid_emb = self.video_embeddings(video_features)
         type_emb = self.token_type_embeddings(token_type_ids)
@@ -623,11 +419,6 @@ class BertEmbeddingsWithVideo(nn.Module):
         if self.add_position_embeddings:
             embeddings = self.position_embeddings(embeddings)
         return self.dropout(self.LayerNorm(embeddings))
-
-
-# ---------------------------------------------------------------------------
-# Prediction head
-# ---------------------------------------------------------------------------
 
 class BertPredictionHeadTransform(nn.Module):
     def __init__(self, config: edict) -> None:
@@ -640,12 +431,6 @@ class BertPredictionHeadTransform(nn.Module):
 
 
 class BertLMPredictionHead(nn.Module):
-    """Language-model head: hidden states -> vocabulary logits.
-
-    Optionally shares weights with the input word embedding table
-    (``config.share_wd_cls_weight``).
-    """
-
     def __init__(
         self,
         config: edict,
@@ -677,19 +462,7 @@ class BertLMPredictionHead(nn.Module):
         """(N, L, D) -> (N, L, vocab_size)"""
         return self.decoder(self.transform(hidden_states)) + self.bias
 
-
-# ---------------------------------------------------------------------------
-# Top-level model
-# ---------------------------------------------------------------------------
-
 class RecursiveTransformer(nn.Module):
-    """Recurrent video captioning model.
-
-    At each step the model receives one video clip + partial caption and
-    propagates a memory state to the next step, enabling the generated
-    captions to be temporally coherent across a whole video.
-    """
-
     def __init__(self, config: edict) -> None:
         super().__init__()
         self.config = config
@@ -713,10 +486,6 @@ class RecursiveTransformer(nn.Module):
 
         self.apply(self._init_weights)
 
-    # ------------------------------------------------------------------
-    # Weight initialisation
-    # ------------------------------------------------------------------
-
     def _init_weights(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear):
             module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
@@ -730,10 +499,6 @@ class RecursiveTransformer(nn.Module):
             module.weight.data.fill_(1.0)
             module.bias.data.zero_()
 
-    # ------------------------------------------------------------------
-    # Core forward (single recurrent step)
-    # ------------------------------------------------------------------
-
     def forward_step(
         self,
         prev_ms: list[Optional[torch.Tensor]],
@@ -742,30 +507,12 @@ class RecursiveTransformer(nn.Module):
         input_masks: torch.Tensor,
         token_type_ids: torch.Tensor,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor], torch.Tensor]:
-        """Single recurrent step.
-
-        Args:
-            prev_ms:        list[(N, M, D)] * num_hidden_layers, or [None, …] at step 0
-            input_ids:      (N, L)
-            video_features: (N, L, D_v)
-            input_masks:    (N, L)   1 = valid
-            token_type_ids: (N, L)
-
-        Returns:
-            prev_ms:              updated memory list
-            encoded_layer_outputs: list of (N, L, D) per encoder layer
-            prediction_scores:    (N, L, vocab_size)
-        """
         embeddings = self.embeddings(input_ids, video_features, token_type_ids)
         prev_ms, encoded_layer_outputs = self.encoder(
             prev_ms, embeddings, input_masks, output_all_encoded_layers=False
         )
         prediction_scores = self.decoder(encoded_layer_outputs[-1])
         return prev_ms, encoded_layer_outputs, prediction_scores
-
-    # ------------------------------------------------------------------
-    # Training / evaluation forward (unrolls over all caption steps)
-    # ------------------------------------------------------------------
 
     def forward(
         self,
@@ -776,23 +523,6 @@ class RecursiveTransformer(nn.Module):
         input_labels_list: Optional[list[torch.Tensor]],
         return_memory: bool = False,
     ):
-        """Unroll the recurrent model over all caption steps.
-
-        Args:
-            input_ids_list:      [(N, L)] * step_size
-            video_features_list: [(N, L, D_v)] * step_size
-            input_masks_list:    [(N, L)] * step_size
-            token_type_ids_list: [(N, L)] * step_size
-            input_labels_list:   [(N, L)] * step_size  or None when return_memory=True
-            return_memory:       if True, return accumulated memory states instead
-                                 of loss (used for analysis)
-
-        Returns:
-            If ``return_memory`` is False:
-                (caption_loss, prediction_scores_list)
-            If ``return_memory`` is True:
-                memory_list – list of memory states per step per layer
-        """
         prev_ms: list[Optional[torch.Tensor]] = [None] * self.config.num_hidden_layers
         step_size = len(input_ids_list)
 
@@ -824,11 +554,6 @@ class RecursiveTransformer(nn.Module):
             for i in range(step_size)
         )
         return caption_loss, prediction_scores_list
-
-
-# ---------------------------------------------------------------------------
-# Default configuration
-# ---------------------------------------------------------------------------
 
 base_config = edict(
     hidden_size=768,
