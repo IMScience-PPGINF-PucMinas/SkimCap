@@ -14,27 +14,22 @@
 # limitations under the License.
 """PyTorch optimization for BERT model."""
 
+import abc
 import math
+import logging
+
 import torch
 from torch.optim import Optimizer
 from torch.optim.optimizer import required
 from torch.nn.utils import clip_grad_norm_
-import logging
-import abc
-import sys
 
 logger = logging.getLogger(__name__)
 
 
-if sys.version_info >= (3, 4):
-    ABC = abc.ABC
-else:
-    ABC = abc.ABCMeta('ABC', (), {})
-
-
-class _LRSchedule(ABC):
+class _LRSchedule(abc.ABC):
     """ Parent of all LRSchedules here. """
     warn_t_total = False        # is set to True for schedules where progressing beyond t_total steps doesn't make sense
+
     def __init__(self, warmup=0.002, t_total=-1, **kw):
         """
         :param warmup:  what fraction of t_total steps will be used for linear warmup
@@ -79,6 +74,7 @@ class _LRSchedule(ABC):
 
 
 class ConstantLR(_LRSchedule):
+
     def get_lr_(self, progress):
         return 1.
 
@@ -90,6 +86,7 @@ class WarmupCosineSchedule(_LRSchedule):
     If `cycles` (default=0.5) is different from default, learning rate follows cosine function after warmup.
     """
     warn_t_total = True
+
     def __init__(self, warmup=0.002, t_total=-1, cycles=.5, **kw):
         """
         :param warmup:      see LRSchedule
@@ -165,6 +162,7 @@ class WarmupLinearSchedule(_LRSchedule):
     Linearly decreases learning rate from 1. to 0. over remaining `1 - warmup` steps.
     """
     warn_t_total = True
+
     def get_lr_(self, progress):
         if progress < self.warmup:
             return progress / self.warmup
@@ -308,8 +306,8 @@ class BertAdam(Optimizer):
 
                 # Decay the first and second moment running average coefficient
                 # In-place operations to update the averages at the same time
-                next_m.mul_(beta1).add_(1 - beta1, grad)
-                next_v.mul_(beta2).addcmul_(1 - beta2, grad, grad)
+                next_m.mul_(beta1).add_(grad, alpha=1 - beta1)
+                next_v.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
                 update = next_m / (next_v.sqrt() + group['e'])
 
                 # Just adding the square of the weights to the loss function is *not*
@@ -329,10 +327,5 @@ class BertAdam(Optimizer):
                 p.data.add_(-update_with_lr)
 
                 state['step'] += 1
-
-                # step_size = lr_scheduled * math.sqrt(bias_correction2) / bias_correction1
-                # No bias correction
-                # bias_correction1 = 1 - beta1 ** state['step']
-                # bias_correction2 = 1 - beta2 ** state['step']
 
         return loss
