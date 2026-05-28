@@ -40,6 +40,101 @@ def cal_performance(pred, gold):
     return n_correct
 
 
+def _prepare_recurrent_batch(batch, device, pin_memory):
+    batched_data = [prepare_batch_inputs(step_data, device=device, non_blocking=pin_memory)
+                    for step_data in batch[0]]
+    input_ids_list = [e["input_ids"] for e in batched_data]
+    video_features_list = [e["video_feature"] for e in batched_data]
+    input_masks_list = [e["input_mask"] for e in batched_data]
+    token_type_ids_list = [e["token_type_ids"] for e in batched_data]
+    input_labels_list = [e["input_labels"] for e in batched_data]
+    return input_ids_list, video_features_list, input_masks_list, token_type_ids_list, input_labels_list
+
+
+def _prepare_untied_batch(batch, device, pin_memory):
+    batched_data = prepare_batch_inputs(batch[0], device=device, non_blocking=pin_memory)
+    video_feature = batched_data["video_feature"]
+    video_mask = batched_data["video_mask"]
+    text_ids = batched_data["text_ids"]
+    text_mask = batched_data["text_mask"]
+    text_labels = batched_data["text_labels"]
+    return batched_data, video_feature, video_mask, text_ids, text_mask, text_labels
+
+
+def _prepare_single_batch(batch, device, pin_memory):
+    batched_data = prepare_batch_inputs(batch[0], device=device, non_blocking=pin_memory)
+    input_ids = batched_data["input_ids"]
+    video_features = batched_data["video_feature"]
+    input_masks = batched_data["input_mask"]
+    token_type_ids = batched_data["token_type_ids"]
+    input_labels = batched_data["input_labels"]
+    return batched_data, input_ids, video_features, input_masks, token_type_ids, input_labels
+
+
+def _log_recurrent_debug(batched_data):
+    cur_data = batched_data[0]
+    logger.info("input_ids \n{}".format(cur_data["input_ids"][0]))
+    logger.info("input_mask \n{}".format(cur_data["input_mask"][0]))
+    logger.info("input_labels \n{}".format(cur_data["input_labels"][0]))
+    logger.info("token_type_ids \n{}".format(cur_data["token_type_ids"][0]))
+
+
+def _log_untied_debug(batched_data):
+    logger.info("text_ids \n{}".format(batched_data["text_ids"][0]))
+    logger.info("text_mask \n{}".format(batched_data["text_mask"][0]))
+    logger.info("text_labels \n{}".format(batched_data["text_labels"][0]))
+
+
+def _log_single_debug(batched_data):
+    logger.info("input_ids \n{}".format(batched_data["input_ids"][0]))
+    logger.info("input_mask \n{}".format(batched_data["input_mask"][0]))
+    logger.info("input_labels \n{}".format(batched_data["input_labels"][0]))
+    logger.info("token_type_ids \n{}".format(batched_data["token_type_ids"][0]))
+
+
+def _forward_pass(model, batch, device, opt):
+    if opt.recurrent:
+        input_ids_list, video_features_list, input_masks_list, token_type_ids_list, input_labels_list = \
+            _prepare_recurrent_batch(batch, device, opt.pin_memory)
+        if opt.debug:
+            _log_recurrent_debug(
+                [prepare_batch_inputs(step_data, device=device, non_blocking=opt.pin_memory)
+                 for step_data in batch[0]]
+            )
+        loss, pred_scores_list = model(
+            input_ids_list, video_features_list,
+            input_masks_list, token_type_ids_list, input_labels_list
+        )
+    elif opt.untied or opt.mtrans:
+        batched_data, video_feature, video_mask, text_ids, text_mask, text_labels = \
+            _prepare_untied_batch(batch, device, opt.pin_memory)
+        if opt.debug:
+            _log_untied_debug(batched_data)
+        loss, pred_scores = model(video_feature, video_mask, text_ids, text_mask, text_labels)
+        pred_scores_list = [pred_scores]
+        input_labels_list = [text_labels]
+    else:
+        batched_data, input_ids, video_features, input_masks, token_type_ids, input_labels = \
+            _prepare_single_batch(batch, device, opt.pin_memory)
+        if opt.debug:
+            _log_single_debug(batched_data)
+        loss, pred_scores = model(input_ids, video_features, input_masks, token_type_ids, input_labels)
+        pred_scores_list = [pred_scores]
+        input_labels_list = [input_labels]
+
+    return loss, pred_scores_list, input_labels_list
+
+
+def _accumulate_metrics(pred_scores_list, input_labels_list):
+    n_correct = 0
+    n_word = 0
+    for pred, gold in zip(pred_scores_list, input_labels_list):
+        n_correct += cal_performance(pred, gold)
+        valid_label_mask = gold.ne(RCDataset.IGNORE)
+        n_word += valid_label_mask.sum().item()
+    return n_correct, n_word
+
+
 def train_epoch(model, training_data, optimizer, ema, device, opt, writer, epoch):
     model.train()
 
@@ -47,117 +142,32 @@ def train_epoch(model, training_data, optimizer, ema, device, opt, writer, epoch
     n_word_total = 0
     n_word_correct = 0
 
-    torch.autograd.set_detect_anomaly(True)
-    for batch_idx, batch in enumerate(tqdm(training_data, mininterval=2,
-                                 desc="  Training =>", total=len(training_data))):
-        #print("\n          {}  {}  {}".format(epoch, len(training_data), batch_idx))
-#        input()
-        niter = epoch * len(training_data) + batch_idx
-        #print(niter)
-#        input()
-        writer.add_scalar("Train/LearningRate", float(optimizer.param_groups[0]["lr"]), niter)
-        if opt.recurrent:
-            # prepare data
-            batched_data = [prepare_batch_inputs(step_data, device=device, non_blocking=opt.pin_memory)
-                            for step_data in batch[0]]
-            input_ids_list = [e["input_ids"] for e in batched_data]
-            video_features_list = [e["video_feature"] for e in batched_data]
-            input_masks_list = [e["input_mask"] for e in batched_data]
-            token_type_ids_list = [e["token_type_ids"] for e in batched_data]
-            input_labels_list = [e["input_labels"] for e in batched_data]
+    with torch.autograd.set_detect_anomaly(True):
+        for batch_idx, batch in enumerate(tqdm(training_data, mininterval=2,
+                                               desc="  Training =>", total=len(training_data))):
+            niter = epoch * len(training_data) + batch_idx
+            writer.add_scalar("Train/LearningRate", float(optimizer.param_groups[0]["lr"]), niter)
+
+            optimizer.zero_grad()
+            loss, pred_scores_list, input_labels_list = _forward_pass(model, batch, device, opt)
+            loss.backward()
+
+            if opt.grad_clip != -1:  # enable, -1 == disable
+                nn.utils.clip_grad_norm_(model.parameters(), opt.grad_clip)
+            optimizer.step()
+
+            # update model parameters with ema
+            if ema is not None:
+                ema(model, niter)
+
+            # keep logs
+            n_correct, n_word = _accumulate_metrics(pred_scores_list, input_labels_list)
+            n_word_total += n_word
+            n_word_correct += n_correct
+            total_loss += loss.item()
 
             if opt.debug:
-                def print_info(batched_data, step_idx, batch_idx):
-                    cur_data = batched_data[step_idx]
-                    logger.info("input_ids \n{}".format(cur_data["input_ids"][batch_idx]))
-                    logger.info("input_mask \n{}".format(cur_data["input_mask"][batch_idx]))
-                    logger.info("input_labels \n{}".format(cur_data["input_labels"][batch_idx]))
-                    logger.info("token_type_ids \n{}".format(cur_data["token_type_ids"][batch_idx]))
-
-                print_info(batched_data, 0, 0)
-
-            # forward & backward
-            optimizer.zero_grad()
-            loss, pred_scores_list = model(input_ids_list, video_features_list,
-                                           input_masks_list, token_type_ids_list, input_labels_list)
-            #print(loss)
-        else:  # single sentence
-            if opt.untied or opt.mtrans:
-                # prepare data
-                batched_data = prepare_batch_inputs(batch[0], device=device, non_blocking=opt.pin_memory)
-                video_feature = batched_data["video_feature"]
-                video_mask = batched_data["video_mask"]
-                text_ids = batched_data["text_ids"]
-                text_mask = batched_data["text_mask"]
-                text_labels = batched_data["text_labels"]
-
-                if opt.debug:
-                    def print_info(cur_data, batch_idx):
-                        logger.info("text_ids \n{}".format(cur_data["text_ids"][batch_idx]))
-                        logger.info("text_mask \n{}".format(cur_data["text_mask"][batch_idx]))
-                        logger.info("text_labels \n{}".format(cur_data["text_labels"][batch_idx]))
-
-                    print_info(batched_data, 0)
-
-                # forward & backward
-                optimizer.zero_grad()
-                loss, pred_scores = model(video_feature, video_mask, text_ids, text_mask, text_labels)
-
-                # make it consistent with other configs
-                pred_scores_list = [pred_scores]
-                input_labels_list = [text_labels]
-            else:
-                # prepare data
-                batched_data = prepare_batch_inputs(batch[0], device=device, non_blocking=opt.pin_memory)
-                input_ids = batched_data["input_ids"]
-                video_features = batched_data["video_feature"]
-                input_masks = batched_data["input_mask"]
-                token_type_ids = batched_data["token_type_ids"]
-                input_labels = batched_data["input_labels"]
-
-                if opt.debug:
-                    def print_info(cur_data, batch_idx):
-                        logger.info("input_ids \n{}".format(cur_data["input_ids"][batch_idx]))
-                        logger.info("input_mask \n{}".format(cur_data["input_mask"][batch_idx]))
-                        logger.info("input_labels \n{}".format(cur_data["input_labels"][batch_idx]))
-                        logger.info("token_type_ids \n{}".format(cur_data["token_type_ids"][batch_idx]))
-
-                    print_info(batched_data, 0)
-
-                # forward & backward
-                optimizer.zero_grad()
-                loss, pred_scores = model(input_ids, video_features, input_masks, token_type_ids, input_labels)
-
-                # make it consistent with other configs
-                pred_scores_list = [pred_scores]
-                input_labels_list = [input_labels]
-
-        #print(loss)
-        #input()
-        loss.backward()
-        if opt.grad_clip != -1:  # enable, -1 == disable
-            nn.utils.clip_grad_norm_(model.parameters(), opt.grad_clip)
-        optimizer.step()
-
-        # update model parameters with ema
-        if ema is not None:
-            ema(model, niter)
-
-        # keep logs
-        n_correct = 0
-        n_word = 0
-        for pred, gold in zip(pred_scores_list, input_labels_list):
-            n_correct += cal_performance(pred, gold)
-            valid_label_mask = gold.ne(RCDataset.IGNORE)
-            n_word += valid_label_mask.sum().item()
-
-        n_word_total += n_word
-        n_word_correct += n_correct
-        total_loss += loss.item()
-
-        if opt.debug:
-            break
-    torch.autograd.set_detect_anomaly(False)
+                break
 
     loss_per_word = 1.0 * total_loss / n_word_total
     accuracy = 1.0 * n_word_correct / n_word_total
@@ -175,52 +185,10 @@ def eval_epoch(model, validation_data, device, opt):
 
     with torch.no_grad():
         for batch in tqdm(validation_data, mininterval=2, desc="  Validation =>"):
-            if opt.recurrent:
-                # prepare data
-                batched_data = [prepare_batch_inputs(step_data, device=device, non_blocking=opt.pin_memory)
-                                for step_data in batch[0]]
-                input_ids_list = [e["input_ids"] for e in batched_data]
-                video_features_list = [e["video_feature"] for e in batched_data]
-                input_masks_list = [e["input_mask"] for e in batched_data]
-                token_type_ids_list = [e["token_type_ids"] for e in batched_data]
-                input_labels_list = [e["input_labels"] for e in batched_data]
-
-                loss, pred_scores_list = model(input_ids_list, video_features_list,
-                                               input_masks_list, token_type_ids_list, input_labels_list)
-            else:  # single sentence
-                if opt.untied or opt.mtrans:
-                    # prepare data
-                    batched_data = prepare_batch_inputs(batch[0], device=device, non_blocking=opt.pin_memory)
-                    video_feature = batched_data["video_feature"]
-                    video_mask = batched_data["video_mask"]
-                    text_ids = batched_data["text_ids"]
-                    text_mask = batched_data["text_mask"]
-                    text_labels = batched_data["text_labels"]
-
-                    loss, pred_scores = model(video_feature, video_mask, text_ids, text_mask, text_labels)
-                    pred_scores_list = [pred_scores]
-                    input_labels_list = [text_labels]
-                else:
-                    # prepare data
-                    batched_data = prepare_batch_inputs(batch[0], device=device, non_blocking=opt.pin_memory)
-                    input_ids = batched_data["input_ids"]
-                    video_features = batched_data["video_feature"]
-                    input_masks = batched_data["input_mask"]
-                    token_type_ids = batched_data["token_type_ids"]
-                    input_labels = batched_data["input_labels"]
-
-                    loss, pred_scores = model(input_ids, video_features, input_masks, token_type_ids, input_labels)
-                    pred_scores_list = [pred_scores]
-                    input_labels_list = [input_labels]
+            loss, pred_scores_list, input_labels_list = _forward_pass(model, batch, device, opt)
 
             # keep logs
-            n_correct = 0
-            n_word = 0
-            for pred, gold in zip(pred_scores_list, input_labels_list):
-                n_correct += cal_performance(pred, gold)
-                valid_label_mask = gold.ne(RCDataset.IGNORE)
-                n_word += valid_label_mask.sum().item()
-
+            n_correct, n_word = _accumulate_metrics(pred_scores_list, input_labels_list)
             n_word_total += n_word
             n_word_correct += n_correct
             total_loss += loss.item()
@@ -282,6 +250,40 @@ def eval_language_metrics(checkpoint, eval_data_loader, opt, model=None, eval_mo
     return all_metrics, [res_filepath, all_metrics_filepath]
 
 
+def _setup_log_files(opt):
+    if not opt.log:
+        return None, None
+
+    log_train_file = opt.log + ".train.log"
+    log_valid_file = opt.log + ".valid.log"
+
+    logger.info("Training performance will be written to file: {} and {}".format(
+        log_train_file, log_valid_file))
+
+    with open(log_train_file, "w") as log_tf, open(log_valid_file, "w") as log_vf:
+        log_tf.write("epoch,loss,ppl,accuracy\n")
+        log_vf.write("epoch,loss,ppl,accuracy,METEOR,BLEU@4,CIDEr,re4\n")
+
+    return log_train_file, log_valid_file
+
+
+def _write_epoch_logs(log_train_file, log_valid_file, epoch_i,
+                      train_loss, train_acc, val_loss, val_acc, val_greedy_output):
+    if not (log_train_file and log_valid_file):
+        return
+    with open(log_train_file, "a") as log_tf, open(log_valid_file, "a") as log_vf:
+        log_tf.write("{epoch},{loss: 8.5f},{ppl: 8.5f},{acc:3.3f}\n".format(
+            epoch=epoch_i, loss=train_loss,
+            ppl=math.exp(min(train_loss, 100)), acc=100 * train_acc))
+        log_vf.write("{epoch},{loss: 8.5f},{ppl: 8.5f},{acc:3.3f},{m:.2f},{b:.2f},{c:.2f},{r:.2f}\n".format(
+            epoch=epoch_i, loss=val_loss,
+            ppl=math.exp(min(val_loss, 100)), acc=100 * val_acc,
+            m=val_greedy_output["METEOR"] * 100,
+            b=val_greedy_output["Bleu_4"] * 100,
+            c=val_greedy_output["CIDEr"] * 100,
+            r=val_greedy_output["re4"] * 100))
+
+
 def train(model, training_data, validation_data, device, opt):
     model = model.to(device)
 
@@ -292,6 +294,7 @@ def train(model, training_data, validation_data, device, opt):
         {"params": [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], "weight_decay": 0.01},
         {"params": [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], "weight_decay": 0.0}
     ]
+
     if opt.ema_decay != -1:
         ema = EMA(opt.ema_decay)
         for name, p in model.named_parameters():
@@ -308,27 +311,12 @@ def train(model, training_data, validation_data, device, opt):
                          schedule="warmup_linear")
 
     writer = SummaryWriter(opt.res_dir)
-    log_train_file = None
-    log_valid_file = None
-
-    if opt.log:
-        log_train_file = opt.log + ".train.log"
-        log_valid_file = opt.log + ".valid.log"
-
-        logger.info("Training performance will be written to file: {} and {}".format(
-            log_train_file, log_valid_file))
-
-        with open(log_train_file, "w") as log_tf, open(log_valid_file, "w") as log_vf:
-            log_tf.write("epoch,loss,ppl,accuracy\n")
-            log_vf.write("epoch,loss,ppl,accuracy,BLEU@4,CIDEr,re4\n")
-
-            #log_vf.write("epoch,loss,ppl,accuracy,METEOR,BLEU@4,CIDEr,re4\n")
+    log_train_file, log_valid_file = _setup_log_files(opt)
 
     prev_best_score = 0.
     es_cnt = 0
 
     for epoch_i in range(opt.n_epoch):
-        #print("epoch_i: " + str(epoch_i))
         logger.info("[Epoch {}]".format(epoch_i))
 
         # schedule sampling prob update, TODO not implemented yet
@@ -366,23 +354,19 @@ def train(model, training_data, validation_data, device, opt):
             checkpoint, validation_data, opt, eval_mode="val", model=model)
         cider = val_greedy_output["CIDEr"]
         bleu4 = val_greedy_output["Bleu_4"]
-        #meteor = val_greedy_output["METEOR"]
+        meteor = val_greedy_output["METEOR"]
         r4 = val_greedy_output["re4"]
-        logger.info("Bleu@4 {b:.2f} CIDEr {c:.2f} re4 {r:.2f}"
-          #"[Val] METEOR {m:.2f} Bleu@4 {b:.2f} CIDEr {c:.2f} re4 {r:.2f}"
-                    .format(b=val_greedy_output["Bleu_4"]*100,
-                            #m=val_greedy_output["METEOR"]*100,
-                            c=val_greedy_output["CIDEr"]*100,
-                            r=val_greedy_output["re4"]*100))
-        #writer.add_scalar("Val/METEOR", val_greedy_output["METEOR"]*100, niter)
-        writer.add_scalar("Val/Bleu_4", val_greedy_output["Bleu_4"]*100, niter)
-        writer.add_scalar("Val/CIDEr", val_greedy_output["CIDEr"]*100, niter)
-        writer.add_scalar("Val/Re4", val_greedy_output["re4"]*100, niter)
+        logger.info("[Val] METEOR {m:.2f} Bleu@4 {b:.2f} CIDEr {c:.2f} re4 {r:.2f}"
+                    .format(m=meteor * 100, b=bleu4 * 100, c=cider * 100, r=r4 * 100))
+        writer.add_scalar("Val/METEOR", meteor * 100, niter)
+        writer.add_scalar("Val/Bleu_4", bleu4 * 100, niter)
+        writer.add_scalar("Val/CIDEr", cider * 100, niter)
+        writer.add_scalar("Val/Re4", r4 * 100, niter)
 
         if opt.save_mode == "all":
             model_name = opt.save_model + "_e{e}_b{b}_c{c}_r{r}.chkpt".format(
-                e=epoch_i, b=round(bleu4*100, 2), #m=round(meteor*100, 2),
-                c=round(cider*100, 2), r=round(r4*100, 2))
+                e=epoch_i, b=round(bleu4 * 100, 2),
+                c=round(cider * 100, 2), r=round(r4 * 100, 2))
             torch.save(checkpoint, model_name)
         elif opt.save_mode == "best":
             model_name = opt.save_model + ".chkpt"
@@ -399,24 +383,29 @@ def train(model, training_data, validation_data, device, opt):
                 if es_cnt > opt.max_es_cnt:  # early stop
                     logger.info("Early stop at {} with CIDEr {}".format(epoch_i, prev_best_score))
                     break
+
         cfg_name = opt.save_model + ".cfg.json"
         save_parsed_args_to_json(opt, cfg_name)
 
-        if log_train_file and log_valid_file:
-            with open(log_train_file, "a") as log_tf, open(log_valid_file, "a") as log_vf:
-                log_tf.write("{epoch},{loss: 8.5f},{ppl: 8.5f},{acc:3.3f}\n".format(
-                    epoch=epoch_i, loss=train_loss, ppl=math.exp(min(train_loss, 100)), acc=100*train_acc))
-                log_vf.write("{epoch},{loss: 8.5f},{ppl: 8.5f},{acc:3.3f},{b:.2f},{c:.2f},{r:.2f}\n".format(
-                    epoch=epoch_i, loss=val_loss, ppl=math.exp(min(val_loss, 100)), acc=100*val_acc,
-                    #m=val_greedy_output["METEOR"]*100,
-                    b=val_greedy_output["Bleu_4"]*100,
-                    c=val_greedy_output["CIDEr"]*100,
-                    r=val_greedy_output["re4"]*100))
+        _write_epoch_logs(log_train_file, log_valid_file, epoch_i,
+                          train_loss, train_acc, val_loss, val_acc, val_greedy_output)
 
         if opt.debug:
             break
 
     writer.close()
+
+
+def _resolve_model_type(opt):
+    if opt.recurrent:
+        if opt.xl:
+            return "xl_grad" if opt.xl_grad else "xl"
+        return "re"
+    if opt.untied:
+        return "untied_single"
+    if opt.mtrans:
+        return "mtrans_single"
+    return "single"
 
 
 def get_args():
@@ -503,7 +492,7 @@ def get_args():
     parser.add_argument("--no_cuda", action="store_true", help="run on cpu")
     parser.add_argument("--seed", default=2019, type=int)
     parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--eval_tool_dir", type=str, default="/home/822497/recurrent-transformer/densevid_eval/")
+    parser.add_argument("--eval_tool_dir", type=str, default="./densevid_eval/")
 
     opt = parser.parse_args()
     opt.cuda = not opt.no_cuda
@@ -515,18 +504,7 @@ def get_args():
     if opt.xl_grad:
         assert opt.xl, "`-xl` flag must be set when using `-xl_grad`."
 
-    if opt.recurrent:  # recurrent + xl
-        if opt.xl:
-            model_type = "xl_grad" if opt.xl_grad else "xl"
-        else:
-            model_type = "re"
-    else:  # single sentence
-        if opt.untied:
-            model_type = "untied_single"
-        elif opt.mtrans:
-            model_type = "mtrans_single"
-        else:
-            model_type = "single"
+    model_type = _resolve_model_type(opt)
 
     # make paths
     opt.res_dir = os.path.join(
@@ -548,6 +526,25 @@ def get_args():
             "hidden size has to be the same as word embedding size when " \
             "sharing the word embedding weight and the final classifier weight"
     return opt
+
+
+def _build_model(opt, rt_config):
+    if opt.recurrent:
+        if opt.xl:
+            logger.info("Use recurrent model - TransformerXL" + (" (with gradient)" if opt.xl_grad else ""))
+            return TransformerXL(rt_config)
+        logger.info("Use recurrent model - Mine")
+        return RecursiveTransformer(rt_config)
+
+    if opt.untied:
+        logger.info("Use untied non-recurrent single sentence model")
+        return NonRecurTransformerUntied(rt_config)
+    if opt.mtrans:
+        logger.info("Use masked transformer -- another non-recurrent single sentence model")
+        return MTransformer(rt_config)
+
+    logger.info("Use non-recurrent single sentence model")
+    return NonRecurTransformer(rt_config)
 
 
 def main():
@@ -611,37 +608,20 @@ def main():
         label_smoothing=opt.label_smoothing,
         share_wd_cls_weight=opt.share_wd_cls_weight
     )
-    if opt.recurrent:
-        if opt.xl:
-            logger.info("Use recurrent model - TransformerXL" + " (with gradient)" if opt.xl_grad else "")
-            model = TransformerXL(rt_config)
-        else:
-            logger.info("Use recurrent model - Mine")
-            model = RecursiveTransformer(rt_config)
-    else:  # single sentence, including untied
-        if opt.untied:
-            logger.info("Use untied non-recurrent single sentence model")
-            model = NonRecurTransformerUntied(rt_config)
-        elif opt.mtrans:
-            logger.info("Use masked transformer -- another non-recurrent single sentence model")
-            model = MTransformer(rt_config)
-        else:
-            logger.info("Use non-recurrent single sentence model")
-            model = NonRecurTransformer(rt_config)
+
+    model = _build_model(opt, rt_config)
 
     if opt.glove_path is not None:
         if hasattr(model, "embeddings"):
             logger.info("Load GloVe as word embedding")
-
             model.embeddings.set_pretrained_embedding(
                 torch.from_numpy(
                     torch.load(opt.glove_path, weights_only=False)
                 ).float(),
                 freeze=opt.freeze_glove
             )
-
-    else:
-        logger.warning("This model has no embeddings, cannot load glove vectors into the model")
+        else:
+            logger.warning("This model has no embeddings, cannot load glove vectors into the model")
 
     count_parameters(model)
     if hasattr(model, "embeddings") and hasattr(model.embeddings, "word_embeddings"):
