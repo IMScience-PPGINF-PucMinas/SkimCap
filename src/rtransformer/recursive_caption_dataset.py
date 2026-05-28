@@ -17,7 +17,11 @@ logging.basicConfig(level=logging.INFO, format=log_format)
 
 logger = logging.getLogger(__name__)
 
+
 class RecursiveCaptionDataset(Dataset):
+    """
+    recurrent: if True, return recurrent data
+    """
     PAD_TOKEN = "[PAD]"  # padding of the whole sequence, note
     CLS_TOKEN = "[CLS]"  # leading token of the joint sequence
     SEP_TOKEN = "[SEP]"  # a separator for video and text
@@ -34,9 +38,6 @@ class RecursiveCaptionDataset(Dataset):
     UNK = 6
     IGNORE = -1  # used to calculate loss
 
-    """
-    recurrent: if True, return recurrent data
-    """
     def __init__(self, dset_name, data_dir, video_feature_dir, video_index_dir, duration_file, word2idx_path,
                  max_t_len, max_v_len, max_n_sen, mode="train", recurrent=True, untied=False):
         self.dset_name = dset_name
@@ -65,21 +66,17 @@ class RecursiveCaptionDataset(Dataset):
 
         self.num_sens = None  # number of sentence for each video, set in self._load_data()
 
-        #if video_index_dir is not None:
-            #self.video_frame_indices = self._load_frame_indices(video_index_dir)
-
     def _load_frame_indices(self, video_index_dir):
-        """Carrega os índices de frames por vídeo a partir de arquivos .txt no diretório informado.
-        Cada arquivo deve ter como nome o vídeo (sem extensão) e conter uma linha por índice."""
+        """Loads frame indices per video from .txt files in the given directory.
+        Each file must be named after the video (without extension) and contain one index per line."""
         index_dict = {}
         for fname in os.listdir(video_index_dir):
             if fname.endswith(".txt"):
-                video_name = os.path.splitext(fname)[0]  # Remove a extensão .txt
+                video_name = os.path.splitext(fname)[0]
                 with open(os.path.join(video_index_dir, fname), "r") as f:
                     indices = [int(line.strip()) for line in f if line.strip().isdigit()]
                     index_dict[video_name] = indices
         return index_dict
-
 
     def __len__(self):
         return len(self.data)
@@ -90,7 +87,7 @@ class RecursiveCaptionDataset(Dataset):
 
     def set_data_mode(self, mode):
         """mode: `train` or `val`"""
-        logging.info("Mode {}".format(mode))
+        logger.info("Mode {}".format(mode))
         self.mode = mode
         if self.dset_name == "anet":
             if mode == "train":  # 10000 videos
@@ -121,9 +118,9 @@ class RecursiveCaptionDataset(Dataset):
             for p in [cur_path_bn, cur_path_resnet]:
                 if not os.path.exists(p):
                     self.missing_video_names.append(video_name)
-        print("Missing {} features (clips/sentences) from {} videos".format(
+        logger.info("Missing {} features (clips/sentences) from {} videos".format(
             len(self.missing_video_names), len(set(self.missing_video_names))))
-        print("Missing {}".format(set(self.missing_video_names)))
+        logger.info("Missing {}".format(set(self.missing_video_names)))
         if self.dset_name == "anet":
             self.data = [e for e in self.data if e["name"][2:] not in self.missing_video_names]
         else:
@@ -154,7 +151,7 @@ class RecursiveCaptionDataset(Dataset):
         return frame_to_second
 
     def _load_data(self, data_path):
-        logging.info("Loading data from {}".format(data_path))
+        logger.info("Loading data from {}".format(data_path))
         raw_data = load_json(data_path)
         data = []
         for k, line in tqdm(raw_data.items()):
@@ -166,19 +163,19 @@ class RecursiveCaptionDataset(Dataset):
         if self.recurrent:  # recurrent
             self.data = data
         else:  # non-recurrent single sentence
-            singel_sentence_data = []
+            single_sentence_data = []
             for d in data:
                 num_sen = min(self.max_n_sen, len(d["sentences"]))
-                singel_sentence_data.extend([
+                single_sentence_data.extend([
                     {
                         "duration": d["duration"],
                         "name": d["name"],
                         "timestamp": d["timestamps"][idx],
                         "sentence": d["sentences"][idx]
                     } for idx in range(num_sen)])
-            self.data = singel_sentence_data
+            self.data = single_sentence_data
 
-        logging.info("Loading complete! {} examples".format(len(self)))
+        logger.info("Loading complete! {} examples".format(len(self)))
 
     def convert_example_to_features(self, example):
         """example single snetence
@@ -214,13 +211,18 @@ class RecursiveCaptionDataset(Dataset):
                 single_video_meta.append(cur_meta)
             return single_video_features, single_video_meta
         else:  # single sentence
-            clip_dataloader = self.clip_sentence_to_feature_untied \
-                if self.untied else self.clip_sentence_to_feature
-            cur_data, cur_meta = clip_dataloader(example["name"],
-                                                 example["timestamp"],
-                                                 example["sentence"],
-                                                 video_feature,
-                                                 video_index)
+            if self.untied:
+                cur_data, cur_meta = self.clip_sentence_to_feature_untied(example["name"],
+                                                                          example["timestamp"],
+                                                                          example["sentence"],
+                                                                          video_feature,
+                                                                          video_index)
+            else:
+                cur_data, cur_meta = self.clip_sentence_to_feature(example["name"],
+                                                                   example["timestamp"],
+                                                                   example["sentence"],
+                                                                   video_feature,
+                                                                   video_index)
             return cur_data, cur_meta
 
     def clip_sentence_to_feature(self, name, timestamp, sentence, video_feature, video_index):
@@ -267,7 +269,7 @@ class RecursiveCaptionDataset(Dataset):
         )
         return data, meta
 
-    def clip_sentence_to_feature_untied(self, name, timestamp, sentence, raw_video_feature):
+    def clip_sentence_to_feature_untied(self, name, timestamp, sentence, raw_video_feature, video_index):
         """ make features for a single clip-sentence pair.
         [CLS], [VID], ..., [VID], [SEP], [BOS], [WORD], ..., [WORD], [EOS]
         Args:
@@ -275,13 +277,14 @@ class RecursiveCaptionDataset(Dataset):
             timestamp: [float, float]
             sentence: str
             raw_video_feature: np array, N x D, for the whole video
+            video_index: str, path to the skim index file
         """
         frm2sec = self.frame_to_second[name[2:]] if self.dset_name == "anet" else self.frame_to_second[name]
 
-        assert os.path.exists(os.path.join(self.video_index_dir, f"{name[2:]}.txt"))
+        assert os.path.exists(video_index)
 
         # video + text tokens
-        video_feature, video_mask = self._load_indexed_video_feature_untied(raw_video_feature, timestamp, frm2sec, name)
+        video_feature, video_mask = self._load_indexed_video_feature_untied(raw_video_feature, timestamp, frm2sec, video_index)
         text_tokens, text_mask = self._tokenize_pad_sentence(sentence)
 
         text_ids = [self.word2idx.get(t, self.word2idx[self.UNK_TOKEN]) for t in text_tokens]
@@ -316,7 +319,7 @@ class RecursiveCaptionDataset(Dataset):
         assert st <= ed <= feat_len, "st {} <= ed {} <= feat_len {}".format(st, ed, feat_len)
         return st, ed
 
-#    def _load_indexed_video_feature(self, raw_feat, timestamp, frm2sec):
+    def _load_indexed_video_feature(self, raw_feat, timestamp, frm2sec, skim_idx_file):
         """ [CLS], [VID], ..., [VID], [SEP], [PAD], ..., [PAD],
         All non-PAD tokens are valid, will have a mask value of 1.
         Returns:
@@ -324,37 +327,6 @@ class RecursiveCaptionDataset(Dataset):
             video_tokens: self.max_v_len
             mask: self.max_v_len
         """
-        """
-        max_v_l = self.max_v_len - 2
-        feat_len = len(raw_feat)
-        st, ed = self._convert_to_feat_index_st_ed(feat_len, timestamp, frm2sec)
-        indexed_feat_len = ed - st + 1
-
-        feat = np.zeros((self.max_v_len + self.max_t_len, raw_feat.shape[1]))  # includes [CLS], [SEP]
-        if indexed_feat_len > max_v_l:
-            downsamlp_indices = np.linspace(st, ed, max_v_l, endpoint=True).astype(np.int).tolist()
-            assert max(downsamlp_indices) < feat_len
-            feat[1:max_v_l+1] = raw_feat[downsamlp_indices]  # truncate, sample???
-
-            video_tokens = [self.CLS_TOKEN] + [self.VID_TOKEN] * max_v_l + [self.SEP_TOKEN]
-            mask = [1] * (max_v_l + 2)
-        else:
-            valid_l = ed - st + 1
-            feat[1:valid_l+1] = raw_feat[st:ed + 1]
-            video_tokens = [self.CLS_TOKEN] + [self.VID_TOKEN] * valid_l + \
-                           [self.SEP_TOKEN] + [self.PAD_TOKEN] * (max_v_l - valid_l)
-            mask = [1] * (valid_l + 2) + [0] * (max_v_l - valid_l)
-        return feat, video_tokens, mask
-        """
-
-    def _load_indexed_video_feature(self, raw_feat, timestamp, frm2sec, skim_idx_file):
-    #def _load_indexed_video_feature(self, raw_feat, timestamp, frm2sec):
-        """
-        Alinha os frames com o GT:
-        - Usa todos os frames caso o vídeo tenha <= 100 frames.
-        - Para vídeos com > 100 frames, utiliza os índices de skimming hierárquico carregados em self.video_frame_indices.
-        """
-
         max_v_l = self.max_v_len - 2
         feat_len = len(raw_feat)
         st, ed = self._convert_to_feat_index_st_ed(feat_len, timestamp, frm2sec)
@@ -362,31 +334,25 @@ class RecursiveCaptionDataset(Dataset):
 
         feat = np.zeros((self.max_v_len + self.max_t_len, raw_feat.shape[1]))
 
-        # Aplica skimming se o vídeo é longo e os arquivos de índice existem
-        if feat_len > max_v_l and raw_feat is not None and skim_idx_file is not None:
-            skim_path = skim_idx_file
-            if not os.path.exists(skim_path):
-                logger.warning(f"[SKIM] Arquivo não encontrado: {skim_path}")
+        if feat_len > max_v_l and skim_idx_file is not None and os.path.exists(skim_idx_file):
+            with open(skim_idx_file, 'r') as f:
+                skim_indices = sorted([int(line.strip()) for line in f if line.strip().isdigit()])
+            skim_indices = [i for i in skim_indices if st <= i <= ed]
 
-            if os.path.exists(skim_path):
-                with open(skim_path, 'r') as f:
-                    skim_indices = sorted([int(line.strip()) for line in f if line.strip().isdigit()])
-                skim_indices = [i for i in skim_indices if st <= i <= ed]
+            if len(skim_indices) > max_v_l:
+                skim_indices = skim_indices[:max_v_l]
 
-                if len(skim_indices) > max_v_l:
-                    skim_indices = skim_indices[:max_v_l]
+            feat[1:len(skim_indices)+1] = raw_feat[skim_indices]
+            video_tokens = (
+                [self.CLS_TOKEN] +
+                [self.VID_TOKEN] * len(skim_indices) +
+                [self.SEP_TOKEN] +
+                [self.PAD_TOKEN] * (max_v_l - len(skim_indices))
+            )
+            mask = [1] * (len(skim_indices) + 2) + [0] * (max_v_l - len(skim_indices))
+            return feat, video_tokens, mask
 
-                feat[1:len(skim_indices)+1] = raw_feat[skim_indices]
-                video_tokens = (
-                    [self.CLS_TOKEN] +
-                    [self.VID_TOKEN] * len(skim_indices) +
-                    [self.SEP_TOKEN] +
-                    [self.PAD_TOKEN] * (max_v_l - len(skim_indices))
-                )
-                mask = [1] * (len(skim_indices) + 2) + [0] * (max_v_l - len(skim_indices))
-                return feat, video_tokens, mask
-
-        # Fallback: amostragem padrão
+        # Fallback: uniform downsampling
         if indexed_feat_len > max_v_l:
             downsamlp_indices = np.linspace(st, ed, max_v_l, endpoint=True).astype(int).tolist()
             feat[1:max_v_l+1] = raw_feat[downsamlp_indices]
@@ -400,51 +366,44 @@ class RecursiveCaptionDataset(Dataset):
             mask = [1] * (valid_l + 2) + [0] * (max_v_l - valid_l)
 
         return feat, video_tokens, mask
-       
+
     def _load_indexed_video_feature_untied(self, raw_feat, timestamp, frm2sec, skim_idx_file=None):
         """
-        Carrega features de vídeo com skimming baseado em arquivo .txt, se disponível.
-        Versão untied: apenas [VID] tokens, com padding até max_v_len.
+        Loads video features with skimming based on a .txt index file, if available.
+        Untied version: only [VID] tokens, padded to max_v_len.
 
         Args:
-            raw_feat (np.ndarray): vetor com todas as features do vídeo.
-            timestamp: início e fim do clipe.
-            frm2sec: função de conversão de frame para segundo.
-            skim_idx_file (str): pasta onde estão os arquivos .txt com os índices de skimming.
+            raw_feat (np.ndarray): array with all video features.
+            timestamp: clip start and end times.
+            frm2sec: frame-to-second conversion scalar.
+            skim_idx_file (str): path to the .txt file with skimming indices.
 
         Returns:
-            feat: vetor de features com shape fixo (max_v_len, D).
-            mask: vetor indicando posições válidas (1) e de padding (0).
+            feat: feature array with fixed shape (max_v_len, D).
+            mask: list indicating valid (1) and padding (0) positions.
         """
         max_v_l = self.max_v_len
         feat_len = len(raw_feat)
         st, ed = self._convert_to_feat_index_st_ed(feat_len, timestamp, frm2sec)
         indexed_feat_len = ed - st + 1
 
-        # Inicializa vetor com padding
         feat = np.zeros((max_v_l, raw_feat.shape[1]))
         mask = [0] * max_v_l
 
-        # Aplica skimming somente se o número de frames excede o limite
-        if indexed_feat_len > max_v_l and skim_idx_file is not None:
-            skim_path = os.path.join(skim_idx_file, f"{raw_feat}.txt")
-            if os.path.exists(skim_path):
-                with open(skim_path, 'r') as f:
-                    skim_indices = sorted([int(line.strip()) for line in f if line.strip().isdigit()])
+        if indexed_feat_len > max_v_l and skim_idx_file is not None and os.path.exists(skim_idx_file):
+            with open(skim_idx_file, 'r') as f:
+                skim_indices = sorted([int(line.strip()) for line in f if line.strip().isdigit()])
 
-                # Filtra os índices dentro do intervalo [st, ed]
-                skim_indices = [i for i in skim_indices if st <= i <= ed]
+            skim_indices = [i for i in skim_indices if st <= i <= ed]
 
-                # Limita a quantidade para max_v_l
-                if len(skim_indices) > max_v_l:
-                    skim_indices = skim_indices[:max_v_l]
+            if len(skim_indices) > max_v_l:
+                skim_indices = skim_indices[:max_v_l]
 
-                # Preenche o vetor de features
-                feat[:len(skim_indices)] = raw_feat[skim_indices]
-                mask = [1] * len(skim_indices) + [0] * (max_v_l - len(skim_indices))
-                return feat, mask
+            feat[:len(skim_indices)] = raw_feat[skim_indices]
+            mask = [1] * len(skim_indices) + [0] * (max_v_l - len(skim_indices))
+            return feat, mask
 
-        # Fallback: subamostragem uniforme se não aplicou skimming
+        # Fallback: uniform downsampling
         if indexed_feat_len > max_v_l:
             downsamlp_indices = np.linspace(st, ed, max_v_l, endpoint=True).astype(int).tolist()
             feat = raw_feat[downsamlp_indices]
@@ -455,7 +414,6 @@ class RecursiveCaptionDataset(Dataset):
             mask = [1] * valid_l + [0] * (max_v_l - valid_l)
 
         return feat, mask
-
 
     def _tokenize_pad_sentence(self, sentence):
         """[BOS], [WORD1], [WORD2], ..., [WORDN], [EOS], [PAD], ..., [PAD], len == max_t_len
@@ -523,7 +481,6 @@ def caption_collate(batch):
     1) directly copy the last sentence, but do not count them in when back-prop OR
     2) put all -1 to their text token label, treat
     """
-    # collect meta
     raw_batch_meta = [e[1] for e in batch]
     batch_meta = []
     for e in raw_batch_meta:
@@ -539,7 +496,6 @@ def caption_collate(batch):
         batch_meta.append(cur_meta)
 
     batch = [e[0] for e in batch]
-    # Step1: pad each example to max_n_sen
     max_n_sen = max([len(e) for e in batch])
     raw_step_sizes = []
 
@@ -553,7 +509,6 @@ def caption_collate(batch):
         raw_step_sizes.append(cur_n_sen)
         padded_batch.append(ele)
 
-    # Step2: batching each steps individually in the batches
     collated_step_batch = []
     for step_idx in range(max_n_sen):
         collated_step = step_collate([e[step_idx] for e in padded_batch])
@@ -565,7 +520,6 @@ def single_sentence_collate(batch):
     """get rid of unexpected list transpose in default_collate
     https://github.com/pytorch/pytorch/blob/master/torch/utils/data/_utils/collate.py#L66
     """
-    # collect meta
     batch_meta = [{"name": e[1]["name"],
                    "timestamp": e[1]["timestamp"],
                    "gt_sentence": e[1]["sentence"]
