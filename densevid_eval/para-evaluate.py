@@ -14,11 +14,11 @@ sys.path.insert(0, os.path.join(file_dir, 'coco-caption')) # Hack to allow the i
 
 from pycocoevalcap.tokenizer.ptbtokenizer import PTBTokenizer
 from pycocoevalcap.bleu.bleu import Bleu
-#from pycocoevalcap.meteor.meteor import Meteor
+from pycocoevalcap.meteor.meteor import Meteor
 from pycocoevalcap.rouge.rouge import Rouge
 from pycocoevalcap.cider.cider import Cider
-#from pycocoevalcap.re.re import Re
-#from pycocoevalcap.self_bleu.self_bleu import Self_Bleu
+from pycocoevalcap.re.re import Re
+from pycocoevalcap.self_bleu.self_bleu import Self_Bleu
 #from sets import Set
 import numpy as np
 try:
@@ -58,7 +58,7 @@ class ANETcaptions(object):
         if self.verbose or self.all_scorer:
             self.scorers = [
                 (Bleu(4), ["Bleu_1", "Bleu_2", "Bleu_3", "Bleu_4"]),
-#                (Meteor(),"METEOR"),
+                (Meteor(),"METEOR"),
                 (Rouge(), "ROUGE_L"),
                 (Cider(), "CIDEr")
             ]
