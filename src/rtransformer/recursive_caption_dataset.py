@@ -240,6 +240,14 @@ class RecursiveCaptionDataset(Dataset):
         feat, video_tokens, video_mask = self._load_indexed_video_feature(video_feature, timestamp, frm2sec, video_index)
         text_tokens, text_mask = self._tokenize_pad_sentence(sentence)
 
+        # ── Passo 5: Inject timestamp positional encoding into video features ──
+        # Each video frame receives a sinusoidal encoding of its *normalised*
+        # temporal position within the clip (relative start/end time) so the
+        # model can distinguish frames at the beginning vs. the end of a segment
+        # without relying solely on the global position encoding already present
+        # in BertEmbeddingsWithVideo.
+        feat = self._inject_timestamp_encoding(feat, timestamp, video_tokens)
+
         input_tokens = video_tokens + text_tokens
 
         input_ids = [self.word2idx.get(t, self.word2idx[self.UNK_TOKEN]) for t in input_tokens]
@@ -286,6 +294,18 @@ class RecursiveCaptionDataset(Dataset):
         # video + text tokens
         video_feature, video_mask = self._load_indexed_video_feature_untied(raw_video_feature, timestamp, frm2sec, video_index)
         text_tokens, text_mask = self._tokenize_pad_sentence(sentence)
+
+        # Passo 5: timestamp encoding for untied mode
+        # Build a synthetic video_tokens list to reuse _inject_timestamp_encoding
+        n_valid = int(sum(video_mask))
+        video_tokens_proxy = (
+            [self.VID_TOKEN] * n_valid + [self.PAD_TOKEN] * (self.max_v_len - n_valid)
+        )
+        video_feature = self._inject_timestamp_encoding(
+            np.pad(video_feature, ((0, 0), (0, 0))),  # no-op pad, just for API
+            timestamp,
+            video_tokens_proxy,
+        )
 
         text_ids = [self.word2idx.get(t, self.word2idx[self.UNK_TOKEN]) for t in text_tokens]
         # shifted right, `-1` is ignored when calculating CrossEntropy Loss
@@ -414,6 +434,62 @@ class RecursiveCaptionDataset(Dataset):
             mask = [1] * valid_l + [0] * (max_v_l - valid_l)
 
         return feat, mask
+
+    # ── Passo 5: Timestamp positional encoding ────────────────────────────────
+    @staticmethod
+    def _sinusoidal_pe(position: float, dim: int) -> np.ndarray:
+        """Scalar sinusoidal encoding for a single normalised position in [0, 1].
+
+        Args:
+            position: normalised timestamp in [0, 1]
+            dim:      feature dimensionality to match
+
+        Returns:
+            (dim,) numpy array
+        """
+        pe = np.zeros(dim, dtype=np.float32)
+        div_term = np.exp(np.arange(0, dim, 2) * -(math.log(10000.0) / dim))
+        pe[0::2] = np.sin(position * div_term)
+        pe[1::2] = np.cos(position * div_term[: len(pe[1::2])])
+        return pe
+
+    def _inject_timestamp_encoding(
+        self,
+        feat: np.ndarray,
+        timestamp: list,
+        video_tokens: list,
+    ) -> np.ndarray:
+        """Add sinusoidal timestamp encodings to the video feature array.
+
+        Each valid [VID] position in *feat* receives an encoding that reflects
+        its *normalised* position within the clip (linearly interpolated between
+        the clip's start and end time).  The CLS and SEP slots are untouched.
+        PAD positions (zero rows) are also left as-is.
+
+        Args:
+            feat:         (max_v_len + max_t_len, D) feature array
+            timestamp:    [start_sec, end_sec] of the clip
+            video_tokens: list of token strings of length max_v_len
+
+        Returns:
+            feat with timestamp PE added in-place (copy)
+        """
+        feat = feat.copy()
+        dim = feat.shape[1]
+        t_start, t_end = float(timestamp[0]), float(timestamp[1])
+        duration = max(t_end - t_start, 1e-6)  # avoid div-by-zero
+
+        vid_positions = [
+            i for i, tok in enumerate(video_tokens) if tok == self.VID_TOKEN
+        ]
+        n_vid = len(vid_positions)
+        for rank, pos_idx in enumerate(vid_positions):
+            # Normalised position within the clip [0, 1]
+            norm_pos = rank / max(n_vid - 1, 1)
+            pe = self._sinusoidal_pe(norm_pos, dim)
+            feat[pos_idx] += pe
+
+        return feat
 
     def _tokenize_pad_sentence(self, sentence):
         """[BOS], [WORD1], [WORD2], ..., [WORDN], [EOS], [PAD], ..., [PAD], len == max_t_len
