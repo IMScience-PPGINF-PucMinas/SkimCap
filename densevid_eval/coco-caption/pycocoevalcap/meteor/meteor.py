@@ -3,6 +3,10 @@
 # Python wrapper for METEOR implementation, by Xinlei Chen
 # Acknowledge Michael Denkowski for the generous discussion and help 
 
+# Last modified : Wed 22 May 2019 08:10:00 PM EDT
+# By Sabarish Sivanath
+# To support Python 3
+
 import os
 import sys
 import subprocess
@@ -12,17 +16,17 @@ import threading
 METEOR_JAR = 'meteor-1.5.jar'
 # print METEOR_JAR
 
-class Meteor:
-
+class Meteor(object):
     def __init__(self):
-        self.meteor_p = subprocess.Popen(
-            meteor_cmd,
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
+        self.meteor_cmd = ['java', '-jar', '-Xmx2G', METEOR_JAR, \
+                '-', '-', '-stdio', '-l', 'en', '-norm']
+        self.meteor_p = subprocess.Popen(self.meteor_cmd, \
+                cwd=os.path.dirname(os.path.abspath(__file__)), \
+                stdin=subprocess.PIPE, \
+                stdout=subprocess.PIPE, \
+                stderr=subprocess.PIPE,
+                universal_newlines = True,
+                bufsize = 1)
         # Used to guarantee thread safety
         self.lock = threading.Lock()
 
