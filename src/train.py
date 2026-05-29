@@ -226,24 +226,46 @@ def eval_language_metrics(checkpoint, eval_data_loader, opt, model=None, eval_mo
     lang_filepath = res_filepath.replace(".json", "_lang.json")
     eval_cmd = ["python", "para-evaluate.py", "-s", res_filepath, "-o", lang_filepath,
                 "-v", "-r"] + eval_references
-    subprocess.call(eval_cmd, cwd=opt.eval_tool_dir)
+    ret = subprocess.call(eval_cmd, cwd=opt.eval_tool_dir)
+    if ret != 0:
+        logger.error("para-evaluate.py failed (exit %d). Check eval_tool_dir=%s and Java install.",
+                     ret, opt.eval_tool_dir)
 
     # basic stats
     stat_filepath = res_filepath.replace(".json", "_stat.json")
     eval_stat_cmd = ["python", "get_caption_stat.py", "-s", res_filepath, "-r",  eval_references[0],
                      "-o", stat_filepath, "-v"]
-    subprocess.call(eval_stat_cmd, cwd=opt.eval_tool_dir)
+    ret = subprocess.call(eval_stat_cmd, cwd=opt.eval_tool_dir)
+    if ret != 0:
+        logger.error("get_caption_stat.py failed (exit %d).", ret)
 
     # repetition evaluation
     rep_filepath = res_filepath.replace(".json", "_rep.json")
     eval_rep_cmd = ["python", "evaluateRepetition.py", "-s", res_filepath, "-r",  eval_references[0],
                     "-o", rep_filepath]
-    subprocess.call(eval_rep_cmd, cwd=opt.eval_tool_dir)
+    ret = subprocess.call(eval_rep_cmd, cwd=opt.eval_tool_dir)
+    if ret != 0:
+        logger.error("evaluateRepetition.py failed (exit %d).", ret)
 
-    # save results
+    # save results — guard against missing files if any eval script failed
     logger.info("Finished eval {}.".format(eval_mode))
     metric_filepaths = [lang_filepath, stat_filepath, rep_filepath]
-    all_metrics = merge_dicts([load_json(e) for e in metric_filepaths])
+    loaded = []
+    for fp in metric_filepaths:
+        if os.path.exists(fp):
+            loaded.append(load_json(fp))
+        else:
+            logger.warning("Metric file not found, skipping: %s", fp)
+            loaded.append({})
+    all_metrics = merge_dicts(loaded)
+
+    # Ensure all expected keys exist so callers never get a KeyError
+    _METRIC_DEFAULTS = {"METEOR": 0.0, "Bleu_4": 0.0, "Bleu_1": 0.0,
+                        "Bleu_2": 0.0, "Bleu_3": 0.0, "CIDEr": 0.0, "re4": 0.0}
+    for key, default in _METRIC_DEFAULTS.items():
+        if key not in all_metrics:
+            logger.warning("Metric '%s' missing from eval output, defaulting to %.1f", key, default)
+            all_metrics[key] = default
 
     all_metrics_filepath = res_filepath.replace(".json", "_all_metrics.json")
     save_json(all_metrics, all_metrics_filepath, save_pretty=True)
@@ -494,6 +516,24 @@ def get_args():
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--eval_tool_dir", type=str, default="/home/822497/recurrent-transformer/densevid_eval/")
 
+    # ── Passo 4: coverage mechanism ───────────────────────────────────────────
+    parser.add_argument("--use_coverage", action="store_true", default=True,
+                        help="Enable coverage mechanism to reduce cross-sentence repetition")
+    parser.add_argument("--no_coverage", dest="use_coverage", action="store_false",
+                        help="Disable coverage mechanism")
+
+    # ── Passo 6: contrastive loss ─────────────────────────────────────────────
+    parser.add_argument("--use_contrastive_loss", action="store_true", default=True,
+                        help="Enable NT-Xent contrastive loss between sentence embeddings")
+    parser.add_argument("--no_contrastive_loss", dest="use_contrastive_loss", action="store_false",
+                        help="Disable contrastive loss")
+    parser.add_argument("--contrastive_dim", type=int, default=128,
+                        help="Projection dimension for contrastive embeddings")
+    parser.add_argument("--contrastive_temp", type=float, default=0.07,
+                        help="Temperature for NT-Xent contrastive loss")
+    parser.add_argument("--contrastive_weight", type=float, default=0.1,
+                        help="Weight of the contrastive loss term")
+
     opt = parser.parse_args()
     opt.cuda = not opt.no_cuda
 
@@ -606,7 +646,14 @@ def main():
         memory_dropout_prob=opt.memory_dropout_prob,
         initializer_range=opt.initializer_range,
         label_smoothing=opt.label_smoothing,
-        share_wd_cls_weight=opt.share_wd_cls_weight
+        share_wd_cls_weight=opt.share_wd_cls_weight,
+        # ── Passo 4: coverage mechanism ──────────────────────────────────────
+        use_coverage=opt.use_coverage,
+        # ── Passo 6: contrastive loss ─────────────────────────────────────────
+        use_contrastive_loss=opt.use_contrastive_loss,
+        contrastive_dim=opt.contrastive_dim,
+        contrastive_temp=opt.contrastive_temp,
+        contrastive_weight=opt.contrastive_weight,
     )
 
     model = _build_model(opt, rt_config)
