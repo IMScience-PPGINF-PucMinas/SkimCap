@@ -9,6 +9,7 @@ import argparse
 import json
 import sys
 import os
+os.environ['MKL_THREADING_LAYER'] = 'GNU'
 file_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(file_dir, 'coco-caption')) # Hack to allow the import of pycocoeval
 
@@ -17,25 +18,17 @@ from pycocoevalcap.bleu.bleu import Bleu
 from pycocoevalcap.meteor.meteor import Meteor
 from pycocoevalcap.rouge.rouge import Rouge
 from pycocoevalcap.cider.cider import Cider
-from pycocoevalcap.re.re import Re
-from pycocoevalcap.self_bleu.self_bleu import Self_Bleu
-#from sets import Set
 import numpy as np
-try:
-    set
-except NameError:
-    from sets import Set as set
 
-import re
+
 def parse_sent(sent):
-    res = re.sub('[^a-zA-Z]', ' ', sent)
-    res = res.strip().lower().split()
+    res = sent.strip().lower().split()
     return res
 
 def parse_para(para):
     para = para.replace('..', '.')
-    para = para.replace('.', ' endofsent')
     return parse_sent(para)
+
 
 class ANETcaptions(object):
 
@@ -49,6 +42,7 @@ class ANETcaptions(object):
 
         self.verbose = verbose
         self.all_scorer = all_scorer
+        # self.import_from_pred(prediction_filename)
         self.ground_truths = self.import_ground_truths(ground_truth_filenames)
         self.prediction = self.import_prediction(prediction_filename)
         self.tokenizer = PTBTokenizer()
@@ -60,7 +54,7 @@ class ANETcaptions(object):
                 (Bleu(4), ["Bleu_1", "Bleu_2", "Bleu_3", "Bleu_4"]),
                 (Meteor(),"METEOR"),
                 (Rouge(), "ROUGE_L"),
-                (Cider(), "CIDEr")
+                (Cider(), "CIDEr"),
             ]
         else:
             self.scorers = [(Meteor(), "METEOR")]
@@ -68,38 +62,36 @@ class ANETcaptions(object):
     def ensure_caption_key(self, data):
         if len(data) == 0:
             return data
-#        if not list(data.keys()).startswith('v_'):
-#            data = {'v_' + k: data[k] for k in data}
-        if not next(iter(data)).startswith('v_'):
+        if not list(data.keys())[0].startswith('v_'):
             data = {'v_' + k: data[k] for k in data}
-
         return data
-
+        
     def import_prediction(self, prediction_filename):
         if self.verbose:
-            print(f"| Loading submission... {prediction_filename}")
-#            print("| Loading submission... {}").format(prediction_filename)
+            print("| Loading submission... {}".format(prediction_filename))
         submission = json.load(open(prediction_filename))['results']
         # change to paragraph format
         para_submission = {}
         for id in submission.keys():
             para_submission[id] = ''
             for info in submission[id]:
-                para_submission[id] += info['sentence'] + '. '
+                para_submission[id] += info['sentence'] + ' '
         for para in para_submission.values():
-            assert(type(para) == str or type(para) == unicode)
+            assert(type(para) == str)
         # Ensure that every video is limited to the correct maximum number of proposals.
         return self.ensure_caption_key(para_submission)
 
     def import_ground_truths(self, filenames):
         gts = []
-        self.n_ref_vids = set() #Set()
+        self.n_ref_vids = set()
         for filename in filenames:
             gt = json.load(open(filename))
             self.n_ref_vids.update(gt.keys())
+            for name, sen in gt.items():
+                gt[name] = sen.replace(".", " .")
             gts.append(self.ensure_caption_key(gt))
-        #if self.verbose:
-            #print("| Loading GT. #files: %d, #videos: %d" % (len(filenames), len(self.n_ref_vids)))
+        if self.verbose:
+            print("| Loading GT. #files: %d, #videos: %d" % (len(filenames), len(self.n_ref_vids)))
         return gts
 
     def check_gt_exists(self, vid_id):
@@ -144,7 +136,7 @@ class ANETcaptions(object):
             if method != 'Self_Bleu':
                 score, scores = scorer.compute_score(gts, res)
             else:
-                score, scores = scorer.compute_score(gts, para_res)
+                score, scores = scorer.compute_score(gts, para_res) 
             scores = np.asarray(scores)
 
             if type(method) == list:
@@ -168,14 +160,17 @@ class ANETcaptions(object):
                 if i not in hard_samples:
                     hard_samples[i] = []
                 hard_samples[i].append(method)
-                i = scores.argmax()
-                if i not in easy_samples:
-                    easy_samples[i] = []
-                easy_samples[i].append(method)
-        print ('# scored video =', num)
+                ids = scores.argsort()[-20:]
+                for i in reversed(ids):
+                    if i not in easy_samples:
+                        easy_samples[i] = []
+                    easy_samples[i].append(method)
+        print('# scored video =', num)
 
-        self.hard_samples = {gt_vid_ids[i]: v for i, v in hard_samples.items()}
+        # self.hard_samples = {gt_vid_ids[i]: v for i, v in hard_samples.items()}
         self.easy_samples = {gt_vid_ids[i]: v for i, v in easy_samples.items()}
+        print("easy samples:")
+        print(self.easy_samples)
         return output
 
 def main(args):
@@ -188,8 +183,9 @@ def main(args):
     output = {}
     # Output the results
     for metric, score in evaluator.scores.items():
-        print ('| %s: %2.4f'%(metric, 100*score))
+        print('| %s: %2.4f'%(metric, 100*score))
         output[metric] = score
+    print(output)
     json.dump(output, open(args.output, 'w'))
     print(output)
 
@@ -198,7 +194,7 @@ if __name__=='__main__':
     parser = argparse.ArgumentParser(description='Evaluate the results stored in a submissions file.')
     parser.add_argument('-s', '--submission', type=str,  default='sample_submission.json',
                         help='sample submission file for ActivityNet Captions Challenge.')
-    parser.add_argument('-r', '--references', type=str, nargs='+', required=True,
+    parser.add_argument('-r', '--references', type=str, nargs='+',
                         help='reference files with ground truth captions to compare results against. delimited (,) str')
     parser.add_argument('-o', '--output', type=str, default=None, help='output file with final language metrics.')
     parser.add_argument('-v', '--verbose', action='store_true',
@@ -219,4 +215,4 @@ if __name__=='__main__':
         start_time = time.time()
     main(args)
     if args.time:
-        print ('time = %.2f' % (time.time() - start_time))
+        print('time = %.2f' % (time.time() - start_time))
