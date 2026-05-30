@@ -11,13 +11,13 @@
 dset_name="anet" #$1  # [anet, yc2]
 model_type="mart" #$2  # [mart, xl, xlrg, mtrans, mart_no_recurrence]
 
-data_dir="/home/822497/recurrent-transformer/densevid_eval/${dset_name}_data"
+data_dir="./densevid_eval/${dset_name}_data"
 #v_feat_dir="./video_feature/rt_${dset_name}_feat/trainval"
-v_feat_dir="/home/822497/recurrent-transformer/video_feature/rt_anet_feat/trainval"
+v_feat_dir="./video_feature/c3d_anet_feature"
 #v_feat_dir="/mnt/hd/trainval-original"
 v_index_dir= $1
 #dur_file="./video_feature/rt_${dset_name}_feat/${dset_name}_duration_frame.csv"
-dur_file="/home/822497/recurrent-transformer/video_feature/anet_duration_frame.csv"
+dur_file="./video_feature/anet_duration_frame.csv"
 word2idx_path="./cache/${dset_name}_word2idx.json"
 glove_path="./cache/${dset_name}_vocab_glove.pt"
 
