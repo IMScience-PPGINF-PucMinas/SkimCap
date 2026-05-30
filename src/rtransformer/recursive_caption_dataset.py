@@ -6,6 +6,7 @@ import nltk
 import numpy as np
 import os
 
+from scipy.interpolate import interp1d
 from torch.utils.data import Dataset
 from torch.utils.data.dataloader import default_collate
 from tqdm import tqdm
@@ -21,7 +22,20 @@ logger = logging.getLogger(__name__)
 class RecursiveCaptionDataset(Dataset):
     """
     recurrent: if True, return recurrent data
+
+    Feature loading:
+        - C3D features:  <c3d_feature_dir>/<video_name>.npy          shape (100, 2048)
+        - Flow features: <flow_feature_dir>/<video_name>_bn.npy       shape ( 28, 1024)
+
+    Flow is resampled from 28 → 100 clips via linear interpolation so both
+    modalities share the same temporal resolution before concatenation.
+    Final video_feature shape per clip: (max_v_len, 3072)  [2048 C3D + 1024 flow]
+
+    Because every C3D file already has exactly 100 clips, no skimming or
+    timestamp-based indexing is needed: the full feature array is used as-is,
+    padded/trimmed only to max_v_len if necessary.
     """
+
     PAD_TOKEN = "[PAD]"  # padding of the whole sequence, note
     CLS_TOKEN = "[CLS]"  # leading token of the joint sequence
     SEP_TOKEN = "[SEP]"  # a separator for video and text
@@ -43,40 +57,84 @@ class RecursiveCaptionDataset(Dataset):
         self.dset_name = dset_name
         self.word2idx = load_json(word2idx_path)
         self.idx2word = {int(v): k for k, v in self.word2idx.items()}
-        self.data_dir = data_dir  # containing training data
-        self.video_feature_dir = video_feature_dir  # a set of .h5 files
-        self.video_index_dir = video_index_dir
+        self.data_dir = data_dir
         self.duration_file = duration_file
         self.frame_to_second = self._load_duration()
         self.max_seq_len = max_v_len + max_t_len
         self.max_v_len = max_v_len
-        self.max_t_len = max_t_len  # sen
+        self.max_t_len = max_t_len
         self.max_n_sen = max_n_sen
+
+        # ── Feature directories ───────────────────────────────────────────────
+        # video_feature_dir  → C3D features:  <dir>/<video_name>.npy
+        # flow_feature_dir   → Flow features: <dir>/trainval/<video_name>_bn.npy
+        #
+        # Layout expected on disk:
+        #   ./video_feature/c3d_anet_feature/<video_name>.npy
+        #   ./video_feature/rt_anet_feature/trainval/<video_name>_bn.npy
+        self.c3d_feature_dir = video_feature_dir
+        # Derive flow dir from c3d dir parent, keeping paths relative and flexible
+        self.flow_feature_dir = os.path.join(
+            os.path.dirname(video_feature_dir), "rt_anet_feature", "trainval"
+        )
 
         self.mode = mode
         self.recurrent = recurrent
         self.untied = untied
         assert not (self.recurrent and self.untied), "untied and recurrent cannot be True for both"
 
-        # data entries
         self.data = None
         self.set_data_mode(mode=mode)
         self.missing_video_names = []
         self.fix_missing()
 
-        self.num_sens = None  # number of sentence for each video, set in self._load_data()
+        self.num_sens = None
 
-    def _load_frame_indices(self, video_index_dir):
-        """Loads frame indices per video from .txt files in the given directory.
-        Each file must be named after the video (without extension) and contain one index per line."""
-        index_dict = {}
-        for fname in os.listdir(video_index_dir):
-            if fname.endswith(".txt"):
-                video_name = os.path.splitext(fname)[0]
-                with open(os.path.join(video_index_dir, fname), "r") as f:
-                    indices = [int(line.strip()) for line in f if line.strip().isdigit()]
-                    index_dict[video_name] = indices
-        return index_dict
+    # ─────────────────────────────────────────────────────────────────────────
+    # Feature loading helpers
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _c3d_path(self, video_name: str) -> str:
+        return os.path.join(self.c3d_feature_dir, "{}.npy".format(video_name))
+
+    def _flow_path(self, video_name: str) -> str:
+        return os.path.join(self.flow_feature_dir, "{}_bn.npy".format(video_name))
+
+    @staticmethod
+    def _resample_flow(flow: np.ndarray, target_len: int) -> np.ndarray:
+        """Linearly resample flow from its original length to *target_len*.
+
+        Args:
+            flow:       (src_len, 1024) float array
+            target_len: desired number of clips (typically 100)
+
+        Returns:
+            (target_len, 1024) float32 array
+        """
+        src_len = flow.shape[0]
+        if src_len == target_len:
+            return flow.astype(np.float32)
+
+        x_src = np.linspace(0.0, 1.0, src_len)
+        x_tgt = np.linspace(0.0, 1.0, target_len)
+        f = interp1d(x_src, flow, axis=0, kind="linear", assume_sorted=True)
+        return f(x_tgt).astype(np.float32)
+
+    def _load_video_feature(self, video_name: str) -> np.ndarray:
+        """Load and concatenate C3D + flow features.
+
+        C3D  : (100, 2048) — used as-is
+        Flow : ( 28, 1024) — resampled to (100, 1024)
+        Output: (100, 3072) float32
+        """
+        c3d = np.load(self._c3d_path(video_name)).astype(np.float32)   # (100, 2048)
+        flow = np.load(self._flow_path(video_name))                     # ( 28, 1024)
+        flow_resampled = self._resample_flow(flow, target_len=c3d.shape[0])
+        return np.concatenate([c3d, flow_resampled], axis=1)            # (100, 3072)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Dataset setup
+    # ─────────────────────────────────────────────────────────────────────────
 
     def __len__(self):
         return len(self.data)
@@ -90,18 +148,18 @@ class RecursiveCaptionDataset(Dataset):
         logger.info("Mode {}".format(mode))
         self.mode = mode
         if self.dset_name == "anet":
-            if mode == "train":  # 10000 videos
+            if mode == "train":
                 data_path = os.path.join(self.data_dir, "train.json")
-            elif mode == "val":  # 2500 videos
+            elif mode == "val":
                 data_path = os.path.join(self.data_dir, "anet_entities_val_1.json")
-            elif mode == "test":  # 2500 videos
+            elif mode == "test":
                 data_path = os.path.join(self.data_dir, "anet_entities_test_1.json")
             else:
                 raise ValueError("Expecting mode to be one of [`train`, `val`, `test`], got {}".format(mode))
         elif self.dset_name == "yc2":
-            if mode == "train":  # 10000 videos
+            if mode == "train":
                 data_path = os.path.join(self.data_dir, "yc2_train_anet_format.json")
-            elif mode == "val":  # 2500 videos
+            elif mode == "val":
                 data_path = os.path.join(self.data_dir, "yc2_val_anet_format.json")
             else:
                 raise ValueError("Expecting mode to be one of [`train`, `val`, `test`], got {}".format(mode))
@@ -110,12 +168,10 @@ class RecursiveCaptionDataset(Dataset):
         self._load_data(data_path)
 
     def fix_missing(self):
-        """filter our videos with no feature file"""
+        """Filter out videos whose C3D or flow feature file is missing."""
         for e in tqdm(self.data):
             video_name = e["name"][2:] if self.dset_name == "anet" else e["name"]
-            cur_path_resnet = os.path.join(self.video_feature_dir, "{}_resnet.npy".format(video_name))
-            cur_path_bn = os.path.join(self.video_feature_dir, "{}_bn.npy".format(video_name))
-            for p in [cur_path_bn, cur_path_resnet]:
+            for p in [self._c3d_path(video_name), self._flow_path(video_name)]:
                 if not os.path.exists(p):
                     self.missing_video_names.append(video_name)
         logger.info("Missing {} features (clips/sentences) from {} videos".format(
@@ -129,7 +185,7 @@ class RecursiveCaptionDataset(Dataset):
     def _load_duration(self):
         """https://github.com/salesforce/densecap/blob/master/data/anet_dataset.py#L120
         Since the features are extracted not at the exact 0.5 secs. To get the real time for each feature,
-        use `(idx + 1) * frame_to_second[vid_name] `
+        use `(idx + 1) * frame_to_second[vid_name]`
         """
         frame_to_second = {}
         sampling_sec = 0.5  # hard coded, only support 0.5
@@ -145,7 +201,7 @@ class RecursiveCaptionDataset(Dataset):
                 for line in f:
                     vid_name, vid_dur, vid_frame = [l.strip() for l in line.split(",")]
                     frame_to_second[vid_name] = float(vid_dur) * math.ceil(
-                        float(vid_frame) * 1. / float(vid_dur) * sampling_sec) * 1. / float(vid_frame)  # for yc2
+                        float(vid_frame) * 1. / float(vid_dur) * sampling_sec) * 1. / float(vid_frame)
         else:
             raise NotImplementedError("Only support anet and yc2, got {}".format(self.dset_name))
         return frame_to_second
@@ -160,7 +216,7 @@ class RecursiveCaptionDataset(Dataset):
             line["sentences"] = line["sentences"][:self.max_n_sen]
             data.append(line)
 
-        if self.recurrent:  # recurrent
+        if self.recurrent:
             self.data = data
         else:  # non-recurrent single sentence
             single_sentence_data = []
@@ -177,8 +233,12 @@ class RecursiveCaptionDataset(Dataset):
 
         logger.info("Loading complete! {} examples".format(len(self)))
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Feature-to-model conversion
+    # ─────────────────────────────────────────────────────────────────────────
+
     def convert_example_to_features(self, example):
-        """example single snetence
+        """example single sentence
         {"name": str,
          "duration": float,
          "timestamp": [st(float), ed(float)],
@@ -192,261 +252,193 @@ class RecursiveCaptionDataset(Dataset):
         """
         name = example["name"]
         video_name = name[2:] if self.dset_name == "anet" else name
-        feat_path_resnet = os.path.join(self.video_feature_dir, "{}_resnet.npy".format(video_name))
-        feat_path_bn = os.path.join(self.video_feature_dir, "{}_bn.npy".format(video_name))
-        video_feature = np.concatenate([np.load(feat_path_resnet), np.load(feat_path_bn)], axis=1)
-        video_index = os.path.join(self.video_index_dir, "{}_resnet.txt".format(video_name))
 
-        if self.recurrent:  # recurrent
+        # Load C3D + flow concatenated: (100, 3072)
+        video_feature = self._load_video_feature(video_name)
+
+        if self.recurrent:
             num_sen = len(example["sentences"])
             single_video_features = []
             single_video_meta = []
             for clip_idx in range(num_sen):
-                cur_data, cur_meta = self.clip_sentence_to_feature(example["name"],
-                                                                   example["timestamps"][clip_idx],
-                                                                   example["sentences"][clip_idx],
-                                                                   video_feature,
-                                                                   video_index)
+                cur_data, cur_meta = self.clip_sentence_to_feature(
+                    example["name"],
+                    example["timestamps"][clip_idx],
+                    example["sentences"][clip_idx],
+                    video_feature,
+                )
                 single_video_features.append(cur_data)
                 single_video_meta.append(cur_meta)
             return single_video_features, single_video_meta
         else:  # single sentence
             if self.untied:
-                cur_data, cur_meta = self.clip_sentence_to_feature_untied(example["name"],
-                                                                          example["timestamp"],
-                                                                          example["sentence"],
-                                                                          video_feature,
-                                                                          video_index)
+                cur_data, cur_meta = self.clip_sentence_to_feature_untied(
+                    example["name"],
+                    example["timestamp"],
+                    example["sentence"],
+                    video_feature,
+                )
             else:
-                cur_data, cur_meta = self.clip_sentence_to_feature(example["name"],
-                                                                   example["timestamp"],
-                                                                   example["sentence"],
-                                                                   video_feature,
-                                                                   video_index)
+                cur_data, cur_meta = self.clip_sentence_to_feature(
+                    example["name"],
+                    example["timestamp"],
+                    example["sentence"],
+                    video_feature,
+                )
             return cur_data, cur_meta
 
-    def clip_sentence_to_feature(self, name, timestamp, sentence, video_feature, video_index):
-        """ make features for a single clip-sentence pair.
+    def clip_sentence_to_feature(self, name, timestamp, sentence, video_feature):
+        """Make features for a single clip-sentence pair.
         [CLS], [VID], ..., [VID], [SEP], [BOS], [WORD], ..., [WORD], [EOS]
+
+        With C3D, every video has exactly max_v_len clips so no skimming or
+        downsampling is required — the full feature array fills the video slots.
+
         Args:
-            name: str,
-            timestamp: [float, float]
-            sentence: str
-            video_feature: np array
+            name:          str
+            timestamp:     [float, float]  (kept for timestamp PE)
+            sentence:      str
+            video_feature: (100, 3072) float32 array (C3D + resampled flow)
         """
-        frm2sec = self.frame_to_second[name[2:]] if self.dset_name == "anet" else self.frame_to_second[name]
+        feat, video_tokens, video_mask = self._load_video_feature_fixed(video_feature)
 
-        # video + text tokens
-        feat, video_tokens, video_mask = self._load_indexed_video_feature(video_feature, timestamp, frm2sec, video_index)
-        text_tokens, text_mask = self._tokenize_pad_sentence(sentence)
-
-        # ── Passo 5: Inject timestamp positional encoding into video features ──
-        # Each video frame receives a sinusoidal encoding of its *normalised*
-        # temporal position within the clip (relative start/end time) so the
-        # model can distinguish frames at the beginning vs. the end of a segment
-        # without relying solely on the global position encoding already present
-        # in BertEmbeddingsWithVideo.
+        # Passo 5: inject timestamp positional encoding
         feat = self._inject_timestamp_encoding(feat, timestamp, video_tokens)
 
+        text_tokens, text_mask = self._tokenize_pad_sentence(sentence)
         input_tokens = video_tokens + text_tokens
 
         input_ids = [self.word2idx.get(t, self.word2idx[self.UNK_TOKEN]) for t in input_tokens]
-        # shifted right, `-1` is ignored when calculating CrossEntropy Loss
-        input_labels = \
-            [self.IGNORE] * len(video_tokens) + \
-            [self.IGNORE if m == 0 else tid for tid, m in zip(input_ids[-len(text_mask):], text_mask)][1:] + \
+        input_labels = (
+            [self.IGNORE] * len(video_tokens) +
+            [self.IGNORE if m == 0 else tid
+             for tid, m in zip(input_ids[-len(text_mask):], text_mask)][1:] +
             [self.IGNORE]
+        )
         input_mask = video_mask + text_mask
         token_type_ids = [0] * self.max_v_len + [1] * self.max_t_len
 
         data = dict(
             name=name,
             input_tokens=input_tokens,
-            # model inputs
             input_ids=np.array(input_ids).astype(np.int64),
             input_labels=np.array(input_labels).astype(np.int64),
             input_mask=np.array(input_mask).astype(np.float32),
             token_type_ids=np.array(token_type_ids).astype(np.int64),
-            video_feature=feat.astype(np.float32)
+            video_feature=feat.astype(np.float32),
         )
-        meta = dict(
-            # meta
-            name=name,
-            timestamp=timestamp,
-            sentence=sentence,
-        )
+        meta = dict(name=name, timestamp=timestamp, sentence=sentence)
         return data, meta
 
-    def clip_sentence_to_feature_untied(self, name, timestamp, sentence, raw_video_feature, video_index):
-        """ make features for a single clip-sentence pair.
-        [CLS], [VID], ..., [VID], [SEP], [BOS], [WORD], ..., [WORD], [EOS]
+    def clip_sentence_to_feature_untied(self, name, timestamp, sentence, video_feature):
+        """Make features for a single clip-sentence pair (untied mode).
+
         Args:
-            name: str,
-            timestamp: [float, float]
-            sentence: str
-            raw_video_feature: np array, N x D, for the whole video
-            video_index: str, path to the skim index file
+            name:          str
+            timestamp:     [float, float]
+            sentence:      str
+            video_feature: (100, 3072) float32 array
         """
-        frm2sec = self.frame_to_second[name[2:]] if self.dset_name == "anet" else self.frame_to_second[name]
-
-        assert os.path.exists(video_index)
-
-        # video + text tokens
-        video_feature, video_mask = self._load_indexed_video_feature_untied(raw_video_feature, timestamp, frm2sec, video_index)
-        text_tokens, text_mask = self._tokenize_pad_sentence(sentence)
+        feat, video_mask = self._load_video_feature_fixed_untied(video_feature)
 
         # Passo 5: timestamp encoding for untied mode
-        # Build a synthetic video_tokens list to reuse _inject_timestamp_encoding
         n_valid = int(sum(video_mask))
         video_tokens_proxy = (
             [self.VID_TOKEN] * n_valid + [self.PAD_TOKEN] * (self.max_v_len - n_valid)
         )
-        video_feature = self._inject_timestamp_encoding(
-            np.pad(video_feature, ((0, 0), (0, 0))),  # no-op pad, just for API
+        feat = self._inject_timestamp_encoding(
+            np.pad(feat, ((0, 0), (0, 0))),  # no-op pad, just for API consistency
             timestamp,
             video_tokens_proxy,
         )
 
+        text_tokens, text_mask = self._tokenize_pad_sentence(sentence)
         text_ids = [self.word2idx.get(t, self.word2idx[self.UNK_TOKEN]) for t in text_tokens]
-        # shifted right, `-1` is ignored when calculating CrossEntropy Loss
-        text_labels = [self.IGNORE if m == 0 else tid for tid, m in zip(text_ids, text_mask)][1:] + [self.IGNORE]
+        text_labels = (
+            [self.IGNORE if m == 0 else tid for tid, m in zip(text_ids, text_mask)][1:] +
+            [self.IGNORE]
+        )
 
         data = dict(
             name=name,
             text_tokens=text_tokens,
-            # model inputs
             text_ids=np.array(text_ids).astype(np.int64),
             text_mask=np.array(text_mask).astype(np.float32),
             text_labels=np.array(text_labels).astype(np.int64),
-            video_feature=video_feature.astype(np.float32),
+            video_feature=feat.astype(np.float32),
             video_mask=np.array(video_mask).astype(np.float32),
         )
-        meta = dict(
-            # meta
-            name=name,
-            timestamp=timestamp,
-            sentence=sentence,
-        )
+        meta = dict(name=name, timestamp=timestamp, sentence=sentence)
         return data, meta
 
-    @classmethod
-    def _convert_to_feat_index_st_ed(cls, feat_len, timestamp, frm2sec):
-        """convert wall time st_ed to feature index st_ed"""
-        st = int(math.floor(timestamp[0] / frm2sec))
-        ed = int(math.ceil(timestamp[1] / frm2sec))
-        ed = min(ed, feat_len-1)
-        st = min(st, ed-1)
-        assert st <= ed <= feat_len, "st {} <= ed {} <= feat_len {}".format(st, ed, feat_len)
-        return st, ed
+    # ─────────────────────────────────────────────────────────────────────────
+    # Fixed-length video loading (no skimming, no timestamp indexing)
+    # ─────────────────────────────────────────────────────────────────────────
 
-    def _load_indexed_video_feature(self, raw_feat, timestamp, frm2sec, skim_idx_file):
-        """ [CLS], [VID], ..., [VID], [SEP], [PAD], ..., [PAD],
-        All non-PAD tokens are valid, will have a mask value of 1.
-        Returns:
-            feat is padded to length of (self.max_v_len + self.max_t_len,)
-            video_tokens: self.max_v_len
-            mask: self.max_v_len
-        """
-        max_v_l = self.max_v_len - 2
-        feat_len = len(raw_feat)
-        st, ed = self._convert_to_feat_index_st_ed(feat_len, timestamp, frm2sec)
-        indexed_feat_len = ed - st + 1
+    def _load_video_feature_fixed(self, raw_feat: np.ndarray):
+        """Pack a fixed-size video feature into the model input buffer.
 
-        feat = np.zeros((self.max_v_len + self.max_t_len, raw_feat.shape[1]))
+        Because C3D features already have exactly 100 clips (== max_v_len - 2
+        after reserving slots for [CLS] and [SEP]), no timestamp-based indexing
+        or skimming is needed.  The layout is:
 
-        if feat_len > max_v_l and skim_idx_file is not None and os.path.exists(skim_idx_file):
-            with open(skim_idx_file, 'r') as f:
-                skim_indices = sorted([int(line.strip()) for line in f if line.strip().isdigit()])
-            skim_indices = [i for i in skim_indices if st <= i <= ed]
+            [CLS] [VID]*98 [SEP]   (max_v_len = 100, so 98 VID slots)
 
-            if len(skim_indices) > max_v_l:
-                skim_indices = skim_indices[:max_v_l]
-
-            feat[1:len(skim_indices)+1] = raw_feat[skim_indices]
-            video_tokens = (
-                [self.CLS_TOKEN] +
-                [self.VID_TOKEN] * len(skim_indices) +
-                [self.SEP_TOKEN] +
-                [self.PAD_TOKEN] * (max_v_l - len(skim_indices))
-            )
-            mask = [1] * (len(skim_indices) + 2) + [0] * (max_v_l - len(skim_indices))
-            return feat, video_tokens, mask
-
-        # Fallback: uniform downsampling
-        if indexed_feat_len > max_v_l:
-            downsamlp_indices = np.linspace(st, ed, max_v_l, endpoint=True).astype(int).tolist()
-            feat[1:max_v_l+1] = raw_feat[downsamlp_indices]
-            video_tokens = [self.CLS_TOKEN] + [self.VID_TOKEN] * max_v_l + [self.SEP_TOKEN]
-            mask = [1] * (max_v_l + 2)
-        else:
-            valid_l = indexed_feat_len
-            feat[1:valid_l+1] = raw_feat[st:ed + 1]
-            video_tokens = [self.CLS_TOKEN] + [self.VID_TOKEN] * valid_l + \
-                        [self.SEP_TOKEN] + [self.PAD_TOKEN] * (max_v_l - valid_l)
-            mask = [1] * (valid_l + 2) + [0] * (max_v_l - valid_l)
-
-        return feat, video_tokens, mask
-
-    def _load_indexed_video_feature_untied(self, raw_feat, timestamp, frm2sec, skim_idx_file=None):
-        """
-        Loads video features with skimming based on a .txt index file, if available.
-        Untied version: only [VID] tokens, padded to max_v_len.
+        If a video has fewer than 98 clips (edge case), the remaining slots are
+        zero-padded.  If it has more, only the first 98 are used.
 
         Args:
-            raw_feat (np.ndarray): array with all video features.
-            timestamp: clip start and end times.
-            frm2sec: frame-to-second conversion scalar.
-            skim_idx_file (str): path to the .txt file with skimming indices.
+            raw_feat: (N, D) float32 array — typically (100, 3072)
 
         Returns:
-            feat: feature array with fixed shape (max_v_len, D).
-            mask: list indicating valid (1) and padding (0) positions.
+            feat:         (max_v_len + max_t_len, D) zero-padded array
+            video_tokens: list[str] of length max_v_len
+            video_mask:   list[int] of length max_v_len  (1 = valid, 0 = pad)
+        """
+        max_v_l = self.max_v_len - 2  # slots for [VID] tokens (excl. CLS + SEP)
+        D = raw_feat.shape[1]
+        n_clips = min(len(raw_feat), max_v_l)
+
+        feat = np.zeros((self.max_v_len + self.max_t_len, D), dtype=np.float32)
+        feat[1:n_clips + 1] = raw_feat[:n_clips]  # slot 0 = CLS (zeros), then VID
+
+        video_tokens = (
+            [self.CLS_TOKEN] +
+            [self.VID_TOKEN] * n_clips +
+            [self.SEP_TOKEN] +
+            [self.PAD_TOKEN] * (max_v_l - n_clips)
+        )
+        video_mask = [1] * (n_clips + 2) + [0] * (max_v_l - n_clips)
+
+        return feat, video_tokens, video_mask
+
+    def _load_video_feature_fixed_untied(self, raw_feat: np.ndarray):
+        """Untied version: only [VID] tokens, padded to max_v_len.
+
+        Args:
+            raw_feat: (N, D) float32 array — typically (100, 3072)
+
+        Returns:
+            feat: (max_v_len, D)
+            mask: list[int] of length max_v_len
         """
         max_v_l = self.max_v_len
-        feat_len = len(raw_feat)
-        st, ed = self._convert_to_feat_index_st_ed(feat_len, timestamp, frm2sec)
-        indexed_feat_len = ed - st + 1
+        D = raw_feat.shape[1]
+        n_clips = min(len(raw_feat), max_v_l)
 
-        feat = np.zeros((max_v_l, raw_feat.shape[1]))
-        mask = [0] * max_v_l
-
-        if indexed_feat_len > max_v_l and skim_idx_file is not None and os.path.exists(skim_idx_file):
-            with open(skim_idx_file, 'r') as f:
-                skim_indices = sorted([int(line.strip()) for line in f if line.strip().isdigit()])
-
-            skim_indices = [i for i in skim_indices if st <= i <= ed]
-
-            if len(skim_indices) > max_v_l:
-                skim_indices = skim_indices[:max_v_l]
-
-            feat[:len(skim_indices)] = raw_feat[skim_indices]
-            mask = [1] * len(skim_indices) + [0] * (max_v_l - len(skim_indices))
-            return feat, mask
-
-        # Fallback: uniform downsampling
-        if indexed_feat_len > max_v_l:
-            downsamlp_indices = np.linspace(st, ed, max_v_l, endpoint=True).astype(int).tolist()
-            feat = raw_feat[downsamlp_indices]
-            mask = [1] * max_v_l
-        else:
-            valid_l = indexed_feat_len
-            feat[:valid_l] = raw_feat[st:ed + 1]
-            mask = [1] * valid_l + [0] * (max_v_l - valid_l)
+        feat = np.zeros((max_v_l, D), dtype=np.float32)
+        feat[:n_clips] = raw_feat[:n_clips]
+        mask = [1] * n_clips + [0] * (max_v_l - n_clips)
 
         return feat, mask
 
-    # ── Passo 5: Timestamp positional encoding ────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # Passo 5: Timestamp positional encoding
+    # ─────────────────────────────────────────────────────────────────────────
+
     @staticmethod
     def _sinusoidal_pe(position: float, dim: int) -> np.ndarray:
-        """Scalar sinusoidal encoding for a single normalised position in [0, 1].
-
-        Args:
-            position: normalised timestamp in [0, 1]
-            dim:      feature dimensionality to match
-
-        Returns:
-            (dim,) numpy array
-        """
+        """Scalar sinusoidal encoding for a single normalised position in [0, 1]."""
         pe = np.zeros(dim, dtype=np.float32)
         div_term = np.exp(np.arange(0, dim, 2) * -(math.log(10000.0) / dim))
         pe[0::2] = np.sin(position * div_term)
@@ -461,45 +453,44 @@ class RecursiveCaptionDataset(Dataset):
     ) -> np.ndarray:
         """Add sinusoidal timestamp encodings to the video feature array.
 
-        Each valid [VID] position in *feat* receives an encoding that reflects
-        its *normalised* position within the clip (linearly interpolated between
-        the clip's start and end time).  The CLS and SEP slots are untouched.
-        PAD positions (zero rows) are also left as-is.
+        Each valid [VID] position receives an encoding that reflects its
+        normalised position within the clip (linearly interpolated between the
+        clip's start and end time).  CLS, SEP, and PAD slots are untouched.
 
         Args:
-            feat:         (max_v_len + max_t_len, D) feature array
-            timestamp:    [start_sec, end_sec] of the clip
-            video_tokens: list of token strings of length max_v_len
+            feat:         (max_v_len + max_t_len, D) or (max_v_len, D) array
+            timestamp:    [start_sec, end_sec]
+            video_tokens: list of token strings
 
         Returns:
-            feat with timestamp PE added in-place (copy)
+            feat with timestamp PE added (copy)
         """
         feat = feat.copy()
         dim = feat.shape[1]
         t_start, t_end = float(timestamp[0]), float(timestamp[1])
-        duration = max(t_end - t_start, 1e-6)  # avoid div-by-zero
+        duration = max(t_end - t_start, 1e-6)
 
-        vid_positions = [
-            i for i, tok in enumerate(video_tokens) if tok == self.VID_TOKEN
-        ]
+        vid_positions = [i for i, tok in enumerate(video_tokens) if tok == self.VID_TOKEN]
         n_vid = len(vid_positions)
         for rank, pos_idx in enumerate(vid_positions):
-            # Normalised position within the clip [0, 1]
             norm_pos = rank / max(n_vid - 1, 1)
             pe = self._sinusoidal_pe(norm_pos, dim)
             feat[pos_idx] += pe
 
         return feat
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Text tokenisation
+    # ─────────────────────────────────────────────────────────────────────────
+
     def _tokenize_pad_sentence(self, sentence):
-        """[BOS], [WORD1], [WORD2], ..., [WORDN], [EOS], [PAD], ..., [PAD], len == max_t_len
-        All non-PAD values are valid, with a mask value of 1
+        """[BOS], [WORD1], ..., [WORDN], [EOS], [PAD], ..., [PAD], len == max_t_len
+        All non-PAD values are valid, with a mask value of 1.
         """
         max_t_len = self.max_t_len
         sentence_tokens = nltk.tokenize.word_tokenize(sentence.lower())[:max_t_len - 2]
         sentence_tokens = [self.BOS_TOKEN] + sentence_tokens + [self.EOS_TOKEN]
 
-        # pad
         valid_l = len(sentence_tokens)
         mask = [1] * valid_l + [0] * (max_t_len - valid_l)
         sentence_tokens += [self.PAD_TOKEN] * (max_t_len - valid_l)
@@ -513,7 +504,6 @@ class RecursiveCaptionDataset(Dataset):
         else:
             raw_words = [self.idx2word[wid] for wid in ids if wid != self.IGNORE]
 
-        # get only sentences, the tokens between `[BOS]` and the first `[EOS]`
         if return_sentence_only:
             words = []
             for w in raw_words[1:]:  # no [BOS]
@@ -526,6 +516,10 @@ class RecursiveCaptionDataset(Dataset):
         return " ".join(words)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Batch utilities (unchanged)
+# ─────────────────────────────────────────────────────────────────────────────
+
 def prepare_batch_inputs(batch, device, non_blocking=False):
     batch_inputs = dict()
     bsz = len(batch["name"])
@@ -533,7 +527,7 @@ def prepare_batch_inputs(batch, device, non_blocking=False):
         assert bsz == len(v), (bsz, k, v)
         if isinstance(v, torch.Tensor):
             batch_inputs[k] = v.to(device, non_blocking=non_blocking)
-        else:  # all non-tensor values
+        else:
             batch_inputs[k] = v
     return batch_inputs
 
@@ -553,18 +547,11 @@ def step_collate(padded_batch_step):
 def caption_collate(batch):
     """get rid of unexpected list transpose in default_collate
     https://github.com/pytorch/pytorch/blob/master/torch/utils/data/_utils/collate.py#L66
-    HOW to batch clip-sentence pair?
-    1) directly copy the last sentence, but do not count them in when back-prop OR
-    2) put all -1 to their text token label, treat
     """
     raw_batch_meta = [e[1] for e in batch]
     batch_meta = []
     for e in raw_batch_meta:
-        cur_meta = dict(
-            name=None,
-            timestamp=[],
-            gt_sentence=[]
-        )
+        cur_meta = dict(name=None, timestamp=[], gt_sentence=[])
         for d in e:
             cur_meta["name"] = d["name"]
             cur_meta["timestamp"].append(d["timestamp"])
@@ -576,7 +563,7 @@ def caption_collate(batch):
     raw_step_sizes = []
 
     padded_batch = []
-    padding_clip_sen_data = copy.deepcopy(batch[0][0])  # doesn"t matter which one is used
+    padding_clip_sen_data = copy.deepcopy(batch[0][0])
     padding_clip_sen_data["input_labels"][:] = RecursiveCaptionDataset.IGNORE
     for ele in batch:
         cur_n_sen = len(ele)
@@ -599,6 +586,6 @@ def single_sentence_collate(batch):
     batch_meta = [{"name": e[1]["name"],
                    "timestamp": e[1]["timestamp"],
                    "gt_sentence": e[1]["sentence"]
-                   } for e in batch]  # change key
+                   } for e in batch]
     padded_batch = step_collate([e[0] for e in batch])
     return padded_batch, None, batch_meta
