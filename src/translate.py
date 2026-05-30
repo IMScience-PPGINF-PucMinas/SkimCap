@@ -100,7 +100,7 @@ def get_data_loader(opt, eval_mode="val"):
     eval_dataset = RCDataset(
         dset_name=opt.dset_name,
         data_dir=opt.data_dir, video_feature_dir=opt.video_feature_dir,
-        video_index_dir=opt.video_index_dir, duration_file=opt.v_duration_file, 
+        flow_feature_dir=opt.flow_feature_dir, duration_file=opt.v_duration_file, 
         word2idx_path=opt.word2idx_path, max_t_len=opt.max_t_len,
         max_v_len=opt.max_v_len, max_n_sen=opt.max_n_sen + 10, mode=eval_mode,
         recurrent=opt.recurrent, untied=opt.untied or opt.mtrans)
