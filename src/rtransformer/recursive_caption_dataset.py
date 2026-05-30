@@ -24,7 +24,7 @@ class RecursiveCaptionDataset(Dataset):
     recurrent: if True, return recurrent data
 
     Feature loading:
-        - C3D features:  <cd_feature_dir>/<video_name>.npy          shape (100, 2048)
+        - C3D features:  <c3d_feature_dir>/<video_name>.npy          shape (100, 2048)
         - Flow features: <flow_feature_dir>/<video_name>_bn.npy       shape ( 28, 1024)
 
     Flow is resampled from 28 → 100 clips via linear interpolation so both
@@ -52,7 +52,7 @@ class RecursiveCaptionDataset(Dataset):
     UNK = 6
     IGNORE = -1  # used to calculate loss
 
-    def __init__(self, dset_name, data_dir, video_feature_dir, video_index_dir, duration_file, word2idx_path,
+    def __init__(self, dset_name, data_dir, video_feature_dir, flow_feature_dir, duration_file, word2idx_path,
                  max_t_len, max_v_len, max_n_sen, mode="train", recurrent=True, untied=False):
         self.dset_name = dset_name
         self.word2idx = load_json(word2idx_path)
@@ -67,15 +67,13 @@ class RecursiveCaptionDataset(Dataset):
 
         # ── Feature directories ───────────────────────────────────────────────
         # video_feature_dir  → C3D features:  <dir>/<video_name>.npy
-        # video_index_dir    → Flow features: <dir>/<video_name>_bn.npy
-        #                      (repurposed — skimming .txt files no longer used;
-        #                       pass the flow trainval dir here instead)
+        # flow_feature_dir   → Flow features: <dir>/<video_name>_bn.npy
         #
         # Example args:
-        #   --video_feature_dir  /path/to/cd_anet_feat
-        #   --video_index_dir    /path/to/rt_anet_feat/trainval
+        #   --video_feature_dir  /path/to/c3d_anet_feature
+        #   --flow_feature_dir   /path/to/rt_anet_feat/trainval
         self.c3d_feature_dir = video_feature_dir
-        self.flow_feature_dir = video_index_dir
+        self.flow_feature_dir = flow_feature_dir
 
         self.mode = mode
         self.recurrent = recurrent
