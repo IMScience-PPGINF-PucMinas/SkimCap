@@ -13,7 +13,7 @@ model_type="mart" #$2  # [mart, xl, xlrg, mtrans, mart_no_recurrence]
 
 data_dir="./densevid_eval/${dset_name}_data"
 #v_feat_dir="./video_feature/rt_${dset_name}_feat/trainval"
-v_feat_dir="./video_feature/c3d_anet_feature"
+v_feat_dir="./video_feature/cd_anet_feat"
 #v_feat_dir="/mnt/hd/trainval-original"
 v_index_dir= $1
 #dur_file="./video_feature/rt_${dset_name}_feat/${dset_name}_duration_frame.csv"
