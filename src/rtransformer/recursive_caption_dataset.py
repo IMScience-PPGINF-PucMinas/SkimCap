@@ -24,7 +24,7 @@ class RecursiveCaptionDataset(Dataset):
     recurrent: if True, return recurrent data
 
     Feature loading:
-        - C3D features:  <c3d_feature_dir>/<video_name>.npy          shape (100, 2048)
+        - C3D features:  <cd_feature_dir>/<video_name>.npy          shape (100, 2048)
         - Flow features: <flow_feature_dir>/<video_name>_bn.npy       shape ( 28, 1024)
 
     Flow is resampled from 28 → 100 clips via linear interpolation so both
@@ -67,16 +67,15 @@ class RecursiveCaptionDataset(Dataset):
 
         # ── Feature directories ───────────────────────────────────────────────
         # video_feature_dir  → C3D features:  <dir>/<video_name>.npy
-        # flow_feature_dir   → Flow features: <dir>/trainval/<video_name>_bn.npy
+        # video_index_dir    → Flow features: <dir>/<video_name>_bn.npy
+        #                      (repurposed — skimming .txt files no longer used;
+        #                       pass the flow trainval dir here instead)
         #
-        # Layout expected on disk:
-        #   ./video_feature/cd_anet_feat/<video_name>.npy
-        #   ./video_feature/rt_anet_feat/trainval/<video_name>_bn.npy
+        # Example args:
+        #   --video_feature_dir  /path/to/cd_anet_feat
+        #   --video_index_dir    /path/to/rt_anet_feat/trainval
         self.c3d_feature_dir = video_feature_dir
-        # Derive flow dir from c3d dir parent, keeping paths relative and flexible
-        self.flow_feature_dir = os.path.join(
-            os.path.dirname(video_feature_dir), "rt_anet_feat", "trainval"
-        )
+        self.flow_feature_dir = video_index_dir
 
         self.mode = mode
         self.recurrent = recurrent
@@ -95,9 +94,11 @@ class RecursiveCaptionDataset(Dataset):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _c3d_path(self, video_name: str) -> str:
-        return os.path.join(self.c3d_feature_dir, "{}.npy".format(video_name))
+        # C3D files keep the full name including the "v_" prefix (e.g. v_C4V6fqELvPY.npy)
+        return os.path.join(self.c3d_feature_dir, "v_{}.npy".format(video_name))
 
     def _flow_path(self, video_name: str) -> str:
+        # Flow files have no "v_" prefix (e.g. C4V6fqELvPY_bn.npy)
         return os.path.join(self.flow_feature_dir, "{}_bn.npy".format(video_name))
 
     @staticmethod
