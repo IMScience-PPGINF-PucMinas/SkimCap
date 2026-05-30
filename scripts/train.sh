@@ -44,7 +44,7 @@ time python src/train.py \
     --video_feature_size 3072 \
     --n_epoch 50 \
     --exp_id init \
-    --batch_size 160 \
+    --batch_size 140 \
     --num_workers 8 \
     --n_memory_cells 1 \
     --intermediate_size 768 \
