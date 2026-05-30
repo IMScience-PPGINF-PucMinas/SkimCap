@@ -70,12 +70,12 @@ class RecursiveCaptionDataset(Dataset):
         # flow_feature_dir   → Flow features: <dir>/trainval/<video_name>_bn.npy
         #
         # Layout expected on disk:
-        #   ./video_feature/c3d_anet_feature/<video_name>.npy
-        #   ./video_feature/rt_anet_feature/trainval/<video_name>_bn.npy
+        #   ./video_feature/cd_anet_feat/<video_name>.npy
+        #   ./video_feature/rt_anet_feat/trainval/<video_name>_bn.npy
         self.c3d_feature_dir = video_feature_dir
         # Derive flow dir from c3d dir parent, keeping paths relative and flexible
         self.flow_feature_dir = os.path.join(
-            os.path.dirname(video_feature_dir), "rt_anet_feature", "trainval"
+            os.path.dirname(video_feature_dir), "rt_anet_feat", "trainval"
         )
 
         self.mode = mode
