@@ -7,7 +7,7 @@
 
 dset_name="anet"
 
-data_dir="./densevid_eval/${dset_name}_data"
+data_dir="/home/822497/SkimCap/densevid_eval/${dset_name}_data"
 v_feat_dir="./video_feature/cd_anet_feat"
 flow_feat_dir="./video_feature/rt_anet_feat/trainval"
 dur_file="./video_feature/anet_duration_frame.csv"
