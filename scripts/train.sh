@@ -19,7 +19,7 @@ echo ">>>>>>>> Running training on ${dset_name} dataset"
 
 if [[ ${dset_name} == "anet" ]]; then
     max_n_sen=6
-    max_t_len=22
+    max_t_len=32
     max_v_len=100
 elif [[ ${dset_name} == "yc2" ]]; then
     max_n_sen=12
@@ -43,10 +43,15 @@ time python src/train.py \
     --max_v_len ${max_v_len} \
     --video_feature_size 3072 \
     --n_epoch 50 \
+    --use_beam \
+    --lr 5e-5 \
+    --label_smoothing 0.05 \
+    --beam_size 8 \
     --exp_id init \
-    --batch_size 100 \
+    --batch_size 48 \
     --num_workers 8 \
-    --n_memory_cells 1 \
+    --n_memory_cells 8 \
+    --num_hidden_layers 4 \
     --intermediate_size 768 \
     --hidden_size 768 \
     --recurrent \
