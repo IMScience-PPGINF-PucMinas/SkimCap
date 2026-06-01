@@ -399,7 +399,7 @@ class Translator(object):
                 return self.translate_batch_beam(
                     input_ids_list, video_features_list, input_masks_list, token_type_ids_list,
                     self.model, beam_size=self.opt.beam_size, n_best=self.opt.n_best,
-                    min_length=3, max_length=self.opt.max_sen_len-2,
+                    min_length=3, max_length=self.opt.max_t_len - 2,
                     block_ngram_repeat=self.opt.block_ngram_repeat, exclusion_idxs=[], device=self.device,
                     length_penalty_name=self.opt.length_penalty_name,
                     length_penalty_alpha=self.opt.length_penalty_alpha)
