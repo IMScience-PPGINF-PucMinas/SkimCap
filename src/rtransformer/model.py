@@ -392,11 +392,13 @@ class BertEncoderWithMemory(nn.Module):
 
         all_encoder_layers: list[torch.Tensor] = []
         new_coverages: list[Optional[torch.Tensor]] = []
+        new_ms: list[Optional[torch.Tensor]] = []
 
         for i, layer in enumerate(self.layers):
-            prev_ms[i], hidden_states, new_cov = layer(
+            updated_m, hidden_states, new_cov = layer(
                 prev_ms[i], hidden_states, attention_mask, coverage=coverages[i]
             )
+            new_ms.append(updated_m)
             new_coverages.append(new_cov)
             if output_all_encoded_layers:
                 all_encoder_layers.append(hidden_states)
@@ -404,7 +406,7 @@ class BertEncoderWithMemory(nn.Module):
         if not output_all_encoded_layers:
             all_encoder_layers.append(hidden_states)
 
-        return prev_ms, all_encoder_layers, new_coverages
+        return new_ms, all_encoder_layers, new_coverages
 
 class BertEmbeddingsWithVideo(nn.Module):
     def __init__(self, config: edict, add_position_embeddings: bool = True) -> None:
@@ -677,7 +679,7 @@ class RecursiveTransformer(nn.Module):
                 lang_features=lang_feat,
                 lang_mask=lang_mask,
             )
-            memory_list.append(prev_ms)
+            memory_list.append(list(prev_ms))
             prediction_scores_list.append(prediction_scores)
 
             if self.use_contrastive:
