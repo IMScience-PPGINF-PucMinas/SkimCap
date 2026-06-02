@@ -104,7 +104,8 @@ def _forward_pass(model, batch, device, opt):
             input_masks_list,
             token_type_ids_list,
             input_labels_list,
-            lang_masks_list=lang_features_list,   # carries the actual feature tensors
+            lang_feats_list=lang_features_list,
+            lang_masks_list=lang_masks_list,
             sent_feats_list=sent_feats_list,
         )
     elif opt.untied or opt.mtrans:
