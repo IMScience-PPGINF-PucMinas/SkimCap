@@ -477,7 +477,10 @@ def get_args():
     parser.add_argument("--use_beam", action="store_true", help="use beam search, otherwise greedy search")
     parser.add_argument("--beam_size", type=int, default=2, help="beam size")
     parser.add_argument("--n_best", type=int, default=1, help="stop searching when get n_best from beam search")
-
+    parser.add_argument("--block_ngram_repeat", type=int, default=0, help="Block repeated n-grams during beam search. 0 disables.")
+    parser.add_argument("--length_penalty_name", type=str, default="none")
+    parser.add_argument("--length_penalty_alpha", type=float, default=0.0)
+    
     # others
     parser.add_argument("--no_pin_memory", action="store_true",
                         help="Don't use pin_memory=True for dataloader. "
