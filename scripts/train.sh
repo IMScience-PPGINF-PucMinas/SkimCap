@@ -55,7 +55,7 @@ time python src/train.py \
     --num_workers 8 \
     --n_memory_cells 8 \
     --num_hidden_layers 4 \
-    --intermediate_size 2048 \
+    --intermediate_size 768 \
     --hidden_size 768 \
     --num_attention_heads 12 \
     --ema_decay 0.9996 \
