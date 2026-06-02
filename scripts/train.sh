@@ -16,11 +16,11 @@ echo ">>>>>>>> Running training on ${dset_name} dataset (CLIP + batch 128)"
 if [[ ${dset_name} == "anet" ]]; then
     max_n_sen=6
     max_t_len=32
-    max_v_len=100
+    max_v_len=102
 elif [[ ${dset_name} == "yc2" ]]; then
     max_n_sen=12
     max_t_len=22
-    max_v_len=100
+    max_v_len=102
 else
     echo "Wrong dataset name: select between anet and yc2"
     exit 1
