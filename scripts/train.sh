@@ -43,7 +43,7 @@ time python src/train.py \
     --lang_feature_size 512 \
     --n_epoch 50 \
     --use_beam \
-    --beam_size 4 \
+    --beam_size 2 \
     --lr 2.0e-4 \
     --lr_warmup_proportion 0.1 \
     --label_smoothing 0.05 \
