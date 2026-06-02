@@ -31,7 +31,6 @@ class LabelSmoothingLoss(nn.Module):
         smoothing_value = label_smoothing / (tgt_vocab_size - 1)
 
         one_hot = torch.full((tgt_vocab_size,), smoothing_value)
-        # Register as buffer so it moves with .to(device) / .cuda()
         self.register_buffer("one_hot", one_hot.unsqueeze(0))
 
         self.log_softmax = nn.LogSoftmax(dim=-1)
@@ -78,7 +77,6 @@ class PositionEncoding(nn.Module):
             (*, L, D) with positional encodings added
         """
         pe = self.pe[: x.size(-2)]  # (L, D)
-        # Broadcast over any leading batch dimensions
         for _ in range(x.dim() - 2):
             pe = pe.unsqueeze(0)
         return x + pe
@@ -136,7 +134,6 @@ class BertSelfAttention(nn.Module):
         Returns:
             (N, Lq, D)
         """
-        # attention_mask: (N, 1, Lq, L), additive mask (-10000 for masked positions)
         additive_mask = (1.0 - attention_mask.unsqueeze(1)) * -10000.0
 
         q = self._split_heads(self.query(query_states))  # (N, nh, Lq, dh)
@@ -210,11 +207,9 @@ def make_shifted_mask(
     )
     query_len = max_v_len + max_t_len
 
-    # All query positions can see memory + video keys
     shifted = input_mask.new_zeros(bsz, query_len, seq_len)
     shifted[:, :, : memory_len + max_v_len] = 1
 
-    # Text query rows get causal access to text key columns
     causal = torch.tril(input_mask.new_ones(max_t_len, max_t_len))
     shifted[:, max_v_len:, memory_len + max_v_len:] = causal
 
@@ -227,7 +222,6 @@ def make_pad_shifted_mask(
     memory_len: int = 0,
 ) -> torch.Tensor:
     shifted = make_shifted_mask(input_mask, max_v_len, max_t_len, memory_len)
-    # Zero columns that correspond to padding in the key sequence
     return shifted * input_mask.unsqueeze(1)
 
 def make_video_only_mask(input_mask: torch.Tensor, max_v_len: int) -> torch.Tensor:
@@ -240,7 +234,6 @@ class MemoryInitializer(nn.Module):
         super().__init__()
         self.n_memory_cells = config.n_memory_cells
 
-        # One projection head per memory cell – enables richer initialisation
         self.cell_projections = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(config.hidden_size, config.hidden_size),
@@ -253,12 +246,10 @@ class MemoryInitializer(nn.Module):
     def forward(
         self, input_states: torch.Tensor, attention_mask: torch.Tensor
     ) -> torch.Tensor:
-        # Masked average pooling over valid positions
         denom = attention_mask.sum(1, keepdim=True).clamp(min=1)     # (N, 1)
         pooled = (input_states * attention_mask.unsqueeze(-1)).sum(1) # (N, D)
         pooled = pooled / denom                                        # (N, D)
 
-        # Apply one independent projection per cell
         cells = [proj(pooled).unsqueeze(1) for proj in self.cell_projections]
         return torch.cat(cells, dim=1)  # (N, n_memory_cells, D)
 
@@ -267,11 +258,9 @@ class MemoryUpdater(nn.Module):
         super().__init__()
         self.memory_update_attention = BertSelfAttention(config)
 
-        # Content gate
         self.mc = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
         self.sc = nn.Linear(config.hidden_size, config.hidden_size, bias=True)
 
-        # Interpolation gate
         self.mz = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
         self.sz = nn.Linear(config.hidden_size, config.hidden_size, bias=True)
 
@@ -282,7 +271,6 @@ class MemoryUpdater(nn.Module):
         attention_mask: torch.Tensor,
     ) -> torch.Tensor:
         n_cells = prev_m.size(1)
-        # Each memory cell attends over all valid input positions
         update_mask = attention_mask.unsqueeze(1).expand(-1, n_cells, -1)  # (N, M, L)
         s_t = self.memory_update_attention(prev_m, input_states, input_states, update_mask)
 
@@ -302,17 +290,10 @@ class BertLayerWithMemory(nn.Module):
         self.memory_projection = nn.Linear(config.intermediate_size, config.hidden_size)
         self.output = BertOutput(config)
 
-        # ── Passo 4: Coverage mechanism ──────────────────────────────────────
-        # Tracks cumulative attention over video frames across recurrent steps.
-        # A coverage vector (running sum of past attention weights) is projected
-        # and added to the attention logits so the model is penalised for
-        # repeatedly attending to the same visual regions.
         use_coverage = getattr(config, "use_coverage", True)
         self.use_coverage = use_coverage
         if use_coverage:
-            # Projects the scalar coverage count → hidden_size bias term
             self.coverage_proj = nn.Linear(1, config.hidden_size, bias=False)
-            # Gates how strongly coverage penalty is applied
             self.coverage_gate = nn.Linear(config.hidden_size, config.hidden_size)
 
     def forward(
@@ -337,12 +318,8 @@ class BertLayerWithMemory(nn.Module):
         max_v_len = self.config.max_v_len
         max_t_len = self.config.max_t_len
 
-        # ── Coverage bias injection ───────────────────────────────────────────
-        # Before self-attention, add a per-position bias derived from how much
-        # the model has already attended to each frame in prior recurrent steps.
         states_for_attn = hidden_states
         if self.use_coverage and coverage is not None:
-            # coverage: (N, L) → (N, L, 1) → (N, L, D) via linear
             cov_bias = self.coverage_proj(coverage.unsqueeze(-1))          # (N, L, D)
             gate = torch.sigmoid(self.coverage_gate(hidden_states))        # (N, L, D)
             states_for_attn = hidden_states - gate * cov_bias              # discourage re-attendance
@@ -373,18 +350,18 @@ class BertLayerWithMemory(nn.Module):
         mem_attn_out = self.memory_projection(mem_attn_out)
         layer_output = self.output(mem_attn_out, attention_output)
 
-        # ── Update coverage: accumulate mean attention over video frames ──────
         new_coverage: Optional[torch.Tensor] = None
         if self.use_coverage:
-            # Use the mean-pooled attention output over the video portion as a
-            # proxy for "how much was attended". Detach so gradients don't flow
-            # back through coverage accumulation (standard practice).
             video_attn = layer_output[:, :max_v_len, :]                    # (N, Lv, D)
             attn_proxy = video_attn.norm(dim=-1).detach()                  # (N, Lv)
-            # Pad or trim to full sequence length for consistent shape
             pad_len = hidden_states.size(1) - max_v_len
             attn_proxy_full = F.pad(attn_proxy, (0, pad_len))              # (N, L)
-            new_coverage = (coverage if coverage is not None else torch.zeros_like(attn_proxy_full)) + attn_proxy_full
+            accumulated = (
+                coverage if coverage is not None
+                else torch.zeros_like(attn_proxy_full)
+            ) + attn_proxy_full
+            peak = accumulated.max(dim=-1, keepdim=True).values.clamp(min=1.0)
+            new_coverage = accumulated / peak
 
         return updated_m, layer_output, new_coverage
 
@@ -453,6 +430,17 @@ class BertEmbeddingsWithVideo(nn.Module):
         )
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
 
+        lang_feature_size = getattr(config, "lang_feature_size", 0)
+        self.use_lang_feature = lang_feature_size > 0
+        if self.use_lang_feature:
+            self.lang_embeddings = nn.Sequential(
+                BertLayerNorm(lang_feature_size, eps=config.layer_norm_eps),
+                nn.Dropout(config.hidden_dropout_prob),
+                nn.Linear(lang_feature_size, config.hidden_size),
+                nn.ReLU(inplace=True),
+                BertLayerNorm(config.hidden_size, eps=config.layer_norm_eps),
+            )
+
         if self.add_position_embeddings:
             self.position_embeddings = PositionEncoding(
                 n_filters=config.hidden_size,
@@ -478,12 +466,21 @@ class BertEmbeddingsWithVideo(nn.Module):
         input_ids: torch.Tensor,
         video_features: torch.Tensor,
         token_type_ids: torch.Tensor,
+        lang_features: Optional[torch.Tensor] = None,
+        lang_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         word_emb = self.word_fc(self.word_embeddings(input_ids))
         vid_emb = self.video_embeddings(video_features)
         type_emb = self.token_type_embeddings(token_type_ids)
 
         embeddings = word_emb + vid_emb + type_emb
+
+        if self.use_lang_feature and lang_features is not None:
+            lang_emb = self.lang_embeddings(lang_features)   # (N, L, D)
+            if lang_mask is not None:
+                lang_emb = lang_emb * lang_mask.unsqueeze(-1)
+            embeddings = embeddings + lang_emb
+
         if self.add_position_embeddings:
             embeddings = self.position_embeddings(embeddings)
         return self.dropout(self.LayerNorm(embeddings))
@@ -552,11 +549,6 @@ class RecursiveTransformer(nn.Module):
         else:
             self.loss_func = nn.CrossEntropyLoss(ignore_index=-1)
 
-        # ── Passo 6: Contrastive loss between sentence embeddings ─────────────
-        # Projects the pooled [BOS] hidden state of each generated sentence into
-        # a shared embedding space. Sentences within the same paragraph are
-        # pulled together; sentences from different paragraphs (different steps
-        # in the same batch) are pushed apart via NT-Xent (InfoNCE).
         use_contrastive = getattr(config, "use_contrastive_loss", True)
         self.use_contrastive = use_contrastive
         if use_contrastive:
@@ -571,6 +563,10 @@ class RecursiveTransformer(nn.Module):
 
         self.apply(self._init_weights)
 
+        clip_sent_dim = getattr(config, "lang_feature_size", 512) or 512
+        self.sent_proj = nn.Linear(config.hidden_size, clip_sent_dim)
+        self.sent_loss_weight = getattr(config, "sent_loss_weight", 0.05)
+
     def _init_weights(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear):
             module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
@@ -584,7 +580,6 @@ class RecursiveTransformer(nn.Module):
             module.weight.data.fill_(1.0)
             module.bias.data.zero_()
 
-    # ── Passo 6 helper ────────────────────────────────────────────────────────
     def _contrastive_loss(
         self, sentence_embs: list[torch.Tensor]
     ) -> torch.Tensor:
@@ -599,7 +594,6 @@ class RecursiveTransformer(nn.Module):
         if len(sentence_embs) < 2:
             return sentence_embs[0].new_tensor(0.0)
 
-        # Stack → (S, N, D_proj), treat consecutive step-pairs as positives.
         embs = torch.stack(sentence_embs, dim=0)          # (S, N, D_proj)
         embs = F.normalize(embs, dim=-1)
         S, N, D = embs.shape
@@ -607,10 +601,8 @@ class RecursiveTransformer(nn.Module):
         total_loss = embs.new_tensor(0.0)
         n_pairs = 0
         for s in range(S - 1):
-            # anchor = step s, positive = step s+1, all others are negatives
             anchor = embs[s]        # (N, D)
             positive = embs[s + 1]  # (N, D)
-            # Similarity of every anchor against every positive in the batch
             sim = torch.matmul(anchor, positive.T) / self.contrastive_temp  # (N, N)
             labels = torch.arange(N, device=sim.device)
             total_loss = total_loss + F.cross_entropy(sim, labels)
@@ -626,8 +618,13 @@ class RecursiveTransformer(nn.Module):
         input_masks: torch.Tensor,
         token_type_ids: torch.Tensor,
         coverages: Optional[list[Optional[torch.Tensor]]] = None,
+        lang_features: Optional[torch.Tensor] = None,
+        lang_mask: Optional[torch.Tensor] = None,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor], torch.Tensor, list[Optional[torch.Tensor]]]:
-        embeddings = self.embeddings(input_ids, video_features, token_type_ids)
+        embeddings = self.embeddings(
+            input_ids, video_features, token_type_ids,
+            lang_features=lang_features, lang_mask=lang_mask,
+        )
         prev_ms, encoded_layer_outputs, new_coverages = self.encoder(
             prev_ms, embeddings, input_masks,
             output_all_encoded_layers=False,
@@ -644,6 +641,8 @@ class RecursiveTransformer(nn.Module):
         token_type_ids_list: list[torch.Tensor],
         input_labels_list: Optional[list[torch.Tensor]],
         return_memory: bool = False,
+        lang_masks_list=None,
+        sent_feats_list=None,
     ):
         """
         Main forward pass.
@@ -656,16 +655,17 @@ class RecursiveTransformer(nn.Module):
         added to the captioning loss.
         """
         prev_ms: list[Optional[torch.Tensor]] = [None] * self.config.num_hidden_layers
-        # Passo 4: per-layer coverage vectors, initialised to None
         coverages: list[Optional[torch.Tensor]] = [None] * self.config.num_hidden_layers
         step_size = len(input_ids_list)
 
         memory_list: list = []
         prediction_scores_list: list[torch.Tensor] = []
-        # Passo 6: store per-step sentence representations for contrastive loss
         sentence_embs: list[torch.Tensor] = []
+        semantic_losses: list[torch.Tensor] = []
 
         for idx in range(step_size):
+            lang_feat = lang_masks_list[idx] if lang_masks_list is not None else None
+            lang_mask = lang_masks_list[idx] if lang_masks_list is not None else None
             prev_ms, encoded_layers, prediction_scores, coverages = self.forward_step(
                 prev_ms,
                 input_ids_list[idx],
@@ -673,13 +673,35 @@ class RecursiveTransformer(nn.Module):
                 input_masks_list[idx],
                 token_type_ids_list[idx],
                 coverages=coverages,
+                lang_features=lang_feat,
+                lang_mask=lang_mask,
             )
             memory_list.append(prev_ms)
             prediction_scores_list.append(prediction_scores)
 
-            # Passo 6: pool the [BOS] hidden state (first text token = position max_v_len)
             if self.use_contrastive:
                 bos_hidden = encoded_layers[-1][:, self.config.max_v_len, :]  # (N, D)
+                if sent_feats_list is not None:
+                    target_sent = sent_feats_list[idx]
+
+                    if target_sent is not None:
+
+                        pred_sent = self.sent_proj(
+                            bos_hidden
+                        )
+
+                        semantic_loss = (
+                            1 -
+                            F.cosine_similarity(
+                                pred_sent,
+                                target_sent,
+                                dim=-1
+                            )
+                        ).mean()
+
+                        semantic_losses.append(
+                            semantic_loss
+                        )
                 sentence_embs.append(self.contrastive_proj(bos_hidden))
 
         if return_memory:
@@ -696,11 +718,20 @@ class RecursiveTransformer(nn.Module):
             for i in range(step_size)
         )
 
-        # Passo 6: add contrastive loss
         if self.use_contrastive and len(sentence_embs) >= 2:
             contrastive_loss = self._contrastive_loss(sentence_embs)
             caption_loss = caption_loss + self.contrastive_weight * contrastive_loss
 
+        if len(semantic_losses) > 0:
+            semantic_loss = torch.stack(
+                semantic_losses
+            ).mean()
+
+            caption_loss = (
+                caption_loss
+                + self.sent_loss_weight *
+                semantic_loss
+            )
         return caption_loss, prediction_scores_list
 
 base_config = edict(
@@ -723,19 +754,13 @@ base_config = edict(
     share_wd_cls_weight=False,
     label_smoothing=0.1,
     initializer_range=0.02,
-    # ── Passo 4 ──
     use_coverage=True,
-    # ── Passo 6 ──
     use_contrastive_loss=True,
     contrastive_dim=128,
-    contrastive_temp=0.07,
+    contrastive_temp=0.07,         # tune down to 0.10 for batch < 128
     contrastive_weight=0.1,
+    sent_loss_weight=0.05,         # increase to 0.15 when CLIP features are used
 )
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Translator — beam search with n-gram blocking and length penalty
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def _get_ngrams(sequence: list[int], n: int) -> set[tuple[int, ...]]:
     """Return the set of all n-grams in *sequence*."""
@@ -760,11 +785,9 @@ def _apply_ngram_block(
     if no_repeat_ngram_size <= 0 or len(hyp_ids) < no_repeat_ngram_size - 1:
         return logits
 
-    # Build the (n-1)-gram prefix that would precede the next token
     prefix = tuple(hyp_ids[-(no_repeat_ngram_size - 1):])
     blocked_logits = logits.clone()
 
-    # For each token, check whether (prefix + token) already appeared
     existing_ngrams = _get_ngrams(hyp_ids, no_repeat_ngram_size)
     for token_id in range(logits.size(-1)):
         if prefix + (token_id,) in existing_ngrams:
@@ -817,7 +840,6 @@ class Translator:
         self.eos_idx = eos_idx
         self.device = device or next(model.parameters()).device
 
-    # ── Passo 3 helper ────────────────────────────────────────────────────────
     def _length_penalty_factor(self, length: int) -> float:
         """GNMT-style length penalty: ((5 + |Y|) / 6) ^ α."""
         return ((5.0 + length) / 6.0) ** self.length_penalty
@@ -841,15 +863,10 @@ class Translator:
         prev_ms: list[Optional[torch.Tensor]] = [None] * self.config.num_hidden_layers
         coverages: list[Optional[torch.Tensor]] = [None] * self.config.num_hidden_layers
 
-        # Collect decoded sequences: [bsz][step] = list of token ids
         all_decoded: list[list[list[int]]] = [[[] for _ in range(step_size)] for _ in range(bsz)]
 
         with torch.no_grad():
             for step_idx in range(step_size):
-                # ── Encode the video prefix with teacher-forced text prefix ──
-                # We use a greedy prefix here; for full beam search you would
-                # replicate the states per beam. This implementation does
-                # per-step greedy with n-gram blocking + length penalty.
                 _, encoded_layers, _, coverages = self.model.forward_step(
                     prev_ms,
                     input_ids_list[step_idx],
@@ -859,12 +876,7 @@ class Translator:
                     coverages=coverages,
                 )
 
-                # ── Autoregressive decoding for this step ─────────────────────
-                # Start from the [BOS] position (max_v_len) and decode greedily
-                # with n-gram blocking and length-penalty-aware scoring.
                 hidden = encoded_layers[-1]  # (N, L, D)
-                # Decode token by token using the hidden states as context
-                # (simplified: use prediction_scores from the full encoded seq)
                 _, _, prediction_scores, _ = self.model.forward_step(
                     prev_ms,
                     input_ids_list[step_idx],
@@ -873,8 +885,6 @@ class Translator:
                     token_type_ids_list[step_idx],
                     coverages=coverages,
                 )
-                # prediction_scores: (N, L, vocab_size)
-                # Take text positions only (after max_v_len)
                 text_logits = prediction_scores[:, self.config.max_v_len:, :]  # (N, max_t_len, V)
 
                 decoded_batch: list[list[int]] = [[] for _ in range(bsz)]
@@ -883,21 +893,17 @@ class Translator:
                         if self.eos_idx in decoded_batch[b]:
                             continue
                         logits = text_logits[b, pos]  # (V,)
-                        # Passo 2: n-gram blocking
                         logits = _apply_ngram_block(
                             decoded_batch[b], logits, self.no_repeat_ngram_size
                         )
                         token = logits.argmax(-1).item()
                         decoded_batch[b].append(int(token))
 
-                # Passo 3: length-penalised re-scoring per beam (scalar here)
                 for b in range(bsz):
                     seq = decoded_batch[b]
-                    # Trim at EOS
                     if self.eos_idx in seq:
                         seq = seq[: seq.index(self.eos_idx)]
                     lp = self._length_penalty_factor(max(len(seq), 1))
-                    # Score (used if caller wants ranked candidates; stored for reference)
                     score = sum(
                         text_logits[b, t, decoded_batch[b][t]].item()
                         for t in range(len(decoded_batch[b]))
@@ -906,7 +912,6 @@ class Translator:
                     logger.debug("step=%d batch=%d len=%d lp=%.3f score=%.3f",
                                  step_idx, b, len(seq), lp, score)
 
-                # ── Update recurrent memory for next step ─────────────────────
                 prev_ms, _, _, coverages = self.model.forward_step(
                     prev_ms,
                     input_ids_list[step_idx],

@@ -30,7 +30,6 @@ from tensorboardX import SummaryWriter
 import logging
 logger = logging.getLogger(__name__)
 
-
 def cal_performance(pred, gold):
     pred = pred.max(2)[1].contiguous().view(-1)
     gold = gold.contiguous().view(-1)
@@ -38,7 +37,6 @@ def cal_performance(pred, gold):
     pred_correct_mask = pred.eq(gold)
     n_correct = pred_correct_mask.masked_select(valid_label_mask).sum().item()
     return n_correct
-
 
 def _prepare_recurrent_batch(batch, device, pin_memory):
     batched_data = [prepare_batch_inputs(step_data, device=device, non_blocking=pin_memory)
@@ -48,8 +46,11 @@ def _prepare_recurrent_batch(batch, device, pin_memory):
     input_masks_list = [e["input_mask"] for e in batched_data]
     token_type_ids_list = [e["token_type_ids"] for e in batched_data]
     input_labels_list = [e["input_labels"] for e in batched_data]
-    return input_ids_list, video_features_list, input_masks_list, token_type_ids_list, input_labels_list
-
+    lang_features_list = [e.get("lang_feature") for e in batched_data]
+    lang_masks_list    = [e.get("lang_mask")    for e in batched_data]
+    sent_feats_list    = [e.get("sent_feat")    for e in batched_data]  # None em val
+    return (input_ids_list, video_features_list, input_masks_list, token_type_ids_list,
+            input_labels_list, lang_features_list, lang_masks_list, sent_feats_list)
 
 def _prepare_untied_batch(batch, device, pin_memory):
     batched_data = prepare_batch_inputs(batch[0], device=device, non_blocking=pin_memory)
@@ -60,7 +61,6 @@ def _prepare_untied_batch(batch, device, pin_memory):
     text_labels = batched_data["text_labels"]
     return batched_data, video_feature, video_mask, text_ids, text_mask, text_labels
 
-
 def _prepare_single_batch(batch, device, pin_memory):
     batched_data = prepare_batch_inputs(batch[0], device=device, non_blocking=pin_memory)
     input_ids = batched_data["input_ids"]
@@ -70,7 +70,6 @@ def _prepare_single_batch(batch, device, pin_memory):
     input_labels = batched_data["input_labels"]
     return batched_data, input_ids, video_features, input_masks, token_type_ids, input_labels
 
-
 def _log_recurrent_debug(batched_data):
     cur_data = batched_data[0]
     logger.info("input_ids \n{}".format(cur_data["input_ids"][0]))
@@ -78,12 +77,10 @@ def _log_recurrent_debug(batched_data):
     logger.info("input_labels \n{}".format(cur_data["input_labels"][0]))
     logger.info("token_type_ids \n{}".format(cur_data["token_type_ids"][0]))
 
-
 def _log_untied_debug(batched_data):
     logger.info("text_ids \n{}".format(batched_data["text_ids"][0]))
     logger.info("text_mask \n{}".format(batched_data["text_mask"][0]))
     logger.info("text_labels \n{}".format(batched_data["text_labels"][0]))
-
 
 def _log_single_debug(batched_data):
     logger.info("input_ids \n{}".format(batched_data["input_ids"][0]))
@@ -91,10 +88,10 @@ def _log_single_debug(batched_data):
     logger.info("input_labels \n{}".format(batched_data["input_labels"][0]))
     logger.info("token_type_ids \n{}".format(batched_data["token_type_ids"][0]))
 
-
 def _forward_pass(model, batch, device, opt):
     if opt.recurrent:
-        input_ids_list, video_features_list, input_masks_list, token_type_ids_list, input_labels_list = \
+        (input_ids_list, video_features_list, input_masks_list, token_type_ids_list,
+         input_labels_list, lang_features_list, lang_masks_list, sent_feats_list) = \
             _prepare_recurrent_batch(batch, device, opt.pin_memory)
         if opt.debug:
             _log_recurrent_debug(
@@ -102,8 +99,13 @@ def _forward_pass(model, batch, device, opt):
                  for step_data in batch[0]]
             )
         loss, pred_scores_list = model(
-            input_ids_list, video_features_list,
-            input_masks_list, token_type_ids_list, input_labels_list
+            input_ids_list,
+            video_features_list,
+            input_masks_list,
+            token_type_ids_list,
+            input_labels_list,
+            lang_masks_list=lang_features_list,   # carries the actual feature tensors
+            sent_feats_list=sent_feats_list,
         )
     elif opt.untied or opt.mtrans:
         batched_data, video_feature, video_mask, text_ids, text_mask, text_labels = \
@@ -124,7 +126,6 @@ def _forward_pass(model, batch, device, opt):
 
     return loss, pred_scores_list, input_labels_list
 
-
 def _accumulate_metrics(pred_scores_list, input_labels_list):
     n_correct = 0
     n_word = 0
@@ -133,7 +134,6 @@ def _accumulate_metrics(pred_scores_list, input_labels_list):
         valid_label_mask = gold.ne(RCDataset.IGNORE)
         n_word += valid_label_mask.sum().item()
     return n_correct, n_word
-
 
 def train_epoch(model, training_data, optimizer, ema, device, opt, writer, epoch):
     model.train()
@@ -156,11 +156,9 @@ def train_epoch(model, training_data, optimizer, ema, device, opt, writer, epoch
                 nn.utils.clip_grad_norm_(model.parameters(), opt.grad_clip)
             optimizer.step()
 
-            # update model parameters with ema
             if ema is not None:
                 ema(model, niter)
 
-            # keep logs
             n_correct, n_word = _accumulate_metrics(pred_scores_list, input_labels_list)
             n_word_total += n_word
             n_word_correct += n_correct
@@ -172,7 +170,6 @@ def train_epoch(model, training_data, optimizer, ema, device, opt, writer, epoch
     loss_per_word = 1.0 * total_loss / n_word_total
     accuracy = 1.0 * n_word_correct / n_word_total
     return loss_per_word, accuracy
-
 
 def eval_epoch(model, validation_data, device, opt):
     """The same setting as training, where ground-truth word x_{t-1}
@@ -187,7 +184,6 @@ def eval_epoch(model, validation_data, device, opt):
         for batch in tqdm(validation_data, mininterval=2, desc="  Validation =>"):
             loss, pred_scores_list, input_labels_list = _forward_pass(model, batch, device, opt)
 
-            # keep logs
             n_correct, n_word = _accumulate_metrics(pred_scores_list, input_labels_list)
             n_word_total += n_word
             n_word_correct += n_correct
@@ -199,7 +195,6 @@ def eval_epoch(model, validation_data, device, opt):
     loss_per_word = 1.0 * total_loss / n_word_total
     accuracy = 1.0 * n_word_correct / n_word_total
     return loss_per_word, accuracy
-
 
 def eval_language_metrics(checkpoint, eval_data_loader, opt, model=None, eval_mode="val"):
     """eval_mode can only be set to `val` here, as setting to `test` is cheating
@@ -221,26 +216,22 @@ def eval_language_metrics(checkpoint, eval_data_loader, opt, model=None, eval_mo
     else:  # yc2
         reference_files_map = {"val": [os.path.join(opt.data_dir, "yc2_val_anet_format_para.json")]}
 
-    # COCO language evaluation
     eval_references = reference_files_map[eval_mode]
     lang_filepath = res_filepath.replace(".json", "_lang.json")
     eval_cmd = ["python", "para-evaluate.py", "-s", res_filepath, "-o", lang_filepath,
                 "-v", "-r"] + eval_references
     subprocess.call(eval_cmd, cwd=opt.eval_tool_dir)
 
-    # basic stats
     stat_filepath = res_filepath.replace(".json", "_stat.json")
     eval_stat_cmd = ["python", "get_caption_stat.py", "-s", res_filepath, "-r",  eval_references[0],
                      "-o", stat_filepath, "-v"]
     subprocess.call(eval_stat_cmd, cwd=opt.eval_tool_dir)
 
-    # repetition evaluation
     rep_filepath = res_filepath.replace(".json", "_rep.json")
     eval_rep_cmd = ["python", "evaluateRepetition.py", "-s", res_filepath, "-r",  eval_references[0],
                     "-o", rep_filepath]
     subprocess.call(eval_rep_cmd, cwd=opt.eval_tool_dir)
 
-    # save results
     logger.info("Finished eval {}.".format(eval_mode))
     metric_filepaths = [lang_filepath, stat_filepath, rep_filepath]
     all_metrics = merge_dicts([load_json(e) for e in metric_filepaths])
@@ -248,7 +239,6 @@ def eval_language_metrics(checkpoint, eval_data_loader, opt, model=None, eval_mo
     all_metrics_filepath = res_filepath.replace(".json", "_all_metrics.json")
     save_json(all_metrics, all_metrics_filepath, save_pretty=True)
     return all_metrics, [res_filepath, all_metrics_filepath]
-
 
 def _setup_log_files(opt):
     if not opt.log:
@@ -266,7 +256,6 @@ def _setup_log_files(opt):
 
     return log_train_file, log_valid_file
 
-
 def _write_epoch_logs(log_train_file, log_valid_file, epoch_i,
                       train_loss, train_acc, val_loss, val_acc, val_greedy_output):
     if not (log_train_file and log_valid_file):
@@ -283,11 +272,9 @@ def _write_epoch_logs(log_train_file, log_valid_file, epoch_i,
             c=val_greedy_output["CIDEr"] * 100,
             r=val_greedy_output["re4"] * 100))
 
-
 def train(model, training_data, validation_data, device, opt):
     model = model.to(device)
 
-    # Prepare optimizer
     param_optimizer = list(model.named_parameters())
     no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
@@ -334,7 +321,6 @@ def train(model, training_data, validation_data, device, opt):
 
         start = time.time()
 
-        # Note here GT words are used to predicted next words, the same as training case!
         if ema is not None:
             ema.assign(model)  # EMA model
         val_loss, val_acc = eval_epoch(model, validation_data, device, opt)
@@ -343,7 +329,6 @@ def train(model, training_data, validation_data, device, opt):
         writer.add_scalar("Val/Acc", val_acc, niter)
         writer.add_scalar("Val/Loss", val_loss, niter)
 
-        # Note here we use greedy generated words to predicted next words, the true inference situation.
         checkpoint = {
             "model": model.state_dict(),  # EMA model
             "model_cfg": model.config,
@@ -395,7 +380,6 @@ def train(model, training_data, validation_data, device, opt):
 
     writer.close()
 
-
 def _resolve_model_type(opt):
     if opt.recurrent:
         if opt.xl:
@@ -407,7 +391,6 @@ def _resolve_model_type(opt):
         return "mtrans_single"
     return "single"
 
-
 def get_args():
     """parse and preprocess cmd line args"""
     parser = argparse.ArgumentParser()
@@ -415,12 +398,13 @@ def get_args():
     parser.add_argument("--dset_name", type=str, default="anet", choices=["anet", "yc2"],
                         help="Name of the dataset, will affect data loader, evaluation, etc")
 
-    # model config
     parser.add_argument("--hidden_size", type=int, default=768)
     parser.add_argument("--intermediate_size", type=int, default=768)
     parser.add_argument("--vocab_size", type=int, help="number of words in the vocabulary")
     parser.add_argument("--word_vec_size", type=int, default=300)
     parser.add_argument("--video_feature_size", type=int, default=3072, help="2048 appearance + 1024 flow")
+    parser.add_argument("--lang_feature_size", type=int, default=512,
+                        help="CLIP language feature dimension per token (0 to disable)")
     parser.add_argument("--max_v_len", type=int, default=100, help="max length of video feature")
     parser.add_argument("--max_t_len", type=int, default=25,
                         help="max length of text (sentence or paragraph), 30 for anet, 20 for yc2")
@@ -451,7 +435,6 @@ def get_args():
     parser.add_argument("--mtrans", action="store_true",
                         help="Masked transformer model for single sentence generation")
 
-    # training config -- learning rate
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--lr_warmup_proportion", default=0.1, type=float,
                         help="Proportion of training to perform linear learning rate warmup for. "
@@ -464,10 +447,20 @@ def get_args():
     parser.add_argument("--data_dir", required=True, help="dir containing the splits data files")
     parser.add_argument("--video_feature_dir", required=True, help="dir containing the video features")
     parser.add_argument("--flow_feature_dir", required=True, help="dir containing the flow (BN) feature files")
+    parser.add_argument("--lang_feature_dir", required=True, help="dir containing the lang feature")
+    parser.add_argument("--sent_feature_dir", required=True, help="dir containing the sent feature")
     parser.add_argument("--v_duration_file", required=True, help="filepath to the duration file")
     parser.add_argument("--word2idx_path", type=str, default="cache/word2idx.json")
     parser.add_argument("--label_smoothing", type=float, default=0.1,
                         help="Use soft target instead of one-hot hard target")
+
+    parser.add_argument("--contrastive_temp", type=float, default=0.07,
+                        help="NT-Xent temperature. Use ~0.10 for batch<128, 0.07 for batch>=128")
+    parser.add_argument("--contrastive_weight", type=float, default=0.1,
+                        help="Weight of the contrastive loss term")
+    parser.add_argument("--sent_loss_weight", type=float, default=0.05,
+                        help="Weight of the CLIP sentence semantic alignment loss. "
+                             "Increase to 0.15 when CLIP features are available")
     parser.add_argument("--n_epoch", type=int, default=50, help="Number of training epochs")
     parser.add_argument("--max_es_cnt", type=int, default=10,
                         help="stop if the model is not improving for max_es_cnt max_es_cnt")
@@ -509,7 +502,6 @@ def get_args():
 
     model_type = _resolve_model_type(opt)
 
-    # make paths
     opt.res_dir = os.path.join(
         opt.res_root_dir, "_".join([opt.dset_name, model_type, opt.exp_id, time.strftime("%Y_%m_%d_%H_%M_%S")]))
     if opt.debug:
@@ -530,7 +522,6 @@ def get_args():
             "sharing the word embedding weight and the final classifier weight"
     return opt
 
-
 def _build_model(opt, rt_config):
     if opt.recurrent:
         if opt.xl:
@@ -549,11 +540,9 @@ def _build_model(opt, rt_config):
     logger.info("Use non-recurrent single sentence model")
     return NonRecurTransformer(rt_config)
 
-
 def main():
     opt = get_args()
 
-    # random seed
     random.seed(opt.seed)
     np.random.seed(opt.seed)
     torch.manual_seed(opt.seed)
@@ -564,15 +553,18 @@ def main():
         flow_feature_dir=opt.flow_feature_dir, duration_file=opt.v_duration_file,
         word2idx_path=opt.word2idx_path, max_t_len=opt.max_t_len,
         max_v_len=opt.max_v_len, max_n_sen=opt.max_n_sen, mode="train",
-        recurrent=opt.recurrent, untied=opt.untied or opt.mtrans)
-    # add 10 at max_n_sen to make the inference stage use all the segments
+        recurrent=opt.recurrent, untied=opt.untied or opt.mtrans,
+        lang_feature_dir=opt.lang_feature_dir,
+        sent_feature_dir=opt.sent_feature_dir)
     val_dataset = RCDataset(
         dset_name=opt.dset_name,
         data_dir=opt.data_dir, video_feature_dir=opt.video_feature_dir,
         flow_feature_dir=opt.flow_feature_dir, duration_file=opt.v_duration_file,
         word2idx_path=opt.word2idx_path, max_t_len=opt.max_t_len,
         max_v_len=opt.max_v_len, max_n_sen=opt.max_n_sen+10, mode="val",
-        recurrent=opt.recurrent, untied=opt.untied or opt.mtrans)
+        recurrent=opt.recurrent, untied=opt.untied or opt.mtrans,
+        lang_feature_dir=opt.lang_feature_dir,
+        sent_feature_dir=opt.sent_feature_dir)
 
     if opt.recurrent:
         collate_fn = caption_collate
@@ -609,7 +601,11 @@ def main():
         memory_dropout_prob=opt.memory_dropout_prob,
         initializer_range=opt.initializer_range,
         label_smoothing=opt.label_smoothing,
-        share_wd_cls_weight=opt.share_wd_cls_weight
+        share_wd_cls_weight=opt.share_wd_cls_weight,
+        lang_feature_size=opt.lang_feature_size,  # CLIP language feature dim (0 = disabled)
+        contrastive_temp=opt.contrastive_temp,
+        contrastive_weight=opt.contrastive_weight,
+        sent_loss_weight=opt.sent_loss_weight,
     )
 
     model = _build_model(opt, rt_config)

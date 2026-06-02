@@ -1,21 +1,17 @@
 #!/usr/bin/env bash
-# Usage:
-#   $ bash {SCRIPT.sh} [Any flags available in train.py, could also be empty]
-# Examples:
-#   anet debug mode:    $ bash scripts/train.sh --debug
-#   anet training mode: $ bash scripts/train.sh
 
 dset_name="anet"
-
 data_dir="/home/lvcardoso/SkimCap/densevid_eval/${dset_name}_data"
 v_feat_dir="./video_feature/cd_anet_feat"
 flow_feat_dir="./video_feature/rt_anet_feat/trainval"
 dur_file="./video_feature/anet_duration_frame.csv"
 word2idx_path="./cache/${dset_name}_word2idx.json"
 glove_path="./cache/${dset_name}_vocab_glove.pt"
+lang_feat_dir="./video_feature/clip_lang_feat"    # ajuste para seu path
+sent_feat_dir="./video_feature/clip_sent_feat"    # ajuste para seu path
 
 echo "---------------------------------------------------------"
-echo ">>>>>>>> Running training on ${dset_name} dataset"
+echo ">>>>>>>> Running training on ${dset_name} dataset (CLIP + batch 144)"
 
 if [[ ${dset_name} == "anet" ]]; then
     max_n_sen=6
@@ -38,21 +34,31 @@ time python src/train.py \
     --v_duration_file ${dur_file} \
     --word2idx_path ${word2idx_path} \
     --glove_path ${glove_path} \
+    --lang_feature_dir ${lang_feat_dir} \
+    --sent_feature_dir ${sent_feat_dir} \
     --max_n_sen ${max_n_sen} \
     --max_t_len ${max_t_len} \
     --max_v_len ${max_v_len} \
     --video_feature_size 3072 \
+    --lang_feature_size 512 \
     --n_epoch 50 \
     --use_beam \
-    --lr 5e-5 \
+    --beam_size 4 \
+    --lr 1.5e-4 \
+    --lr_warmup_proportion 0.1 \
     --label_smoothing 0.05 \
-    --beam_size 8 \
-    --exp_id init \
+    --contrastive_temp 0.10 \
+    --contrastive_weight 0.1 \
+    --sent_loss_weight 0.15 \
     --batch_size 48 \
+    --val_batch_size 64 \
     --num_workers 8 \
     --n_memory_cells 8 \
     --num_hidden_layers 4 \
-    --intermediate_size 768 \
+    --intermediate_size 2048 \
     --hidden_size 768 \
+    --num_attention_heads 12 \
+    --ema_decay 0.9996 \
     --recurrent \
+    --exp_id clip_b144 \
     "$@"

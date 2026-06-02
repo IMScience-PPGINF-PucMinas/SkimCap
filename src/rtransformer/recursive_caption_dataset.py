@@ -61,7 +61,7 @@ class RecursiveCaptionDataset(Dataset):
     IGNORE = -1  # used to calculate loss
 
     def __init__(self, dset_name, data_dir, video_feature_dir, flow_feature_dir, duration_file, word2idx_path,
-                 max_t_len, max_v_len, max_n_sen, mode="train", recurrent=True, untied=False):
+                 max_t_len, max_v_len, max_n_sen, mode="train", recurrent=True, untied=False, lang_feature_dir=None, sent_feature_dir=None,):
         self.dset_name = dset_name
         self.word2idx = load_json(word2idx_path)
         self.idx2word = {int(v): k for k, v in self.word2idx.items()}
@@ -75,6 +75,8 @@ class RecursiveCaptionDataset(Dataset):
 
         self.c3d_feature_dir = video_feature_dir
         self.flow_feature_dir = flow_feature_dir
+        self.lang_feature_dir = lang_feature_dir
+        self.sent_feature_dir = sent_feature_dir
 
         self.mode = mode
         self.recurrent = recurrent
@@ -87,6 +89,37 @@ class RecursiveCaptionDataset(Dataset):
         self.fix_missing()
 
         self.num_sens = None
+
+    def _load_sent_feature(self, name):
+        if self.sent_feature_dir is None:
+            return None
+
+        path = os.path.join(
+            self.sent_feature_dir,
+            name + ".json"
+        )
+
+        if not os.path.exists(path):
+            return None
+
+        feat = load_json(path)
+        if feat is None:
+            return None
+        return np.asarray(feat, dtype=np.float32)
+
+    def _load_lang_feature(self, name):
+        """Load CLIP language features for all segments of a video.
+
+        Expected file: <lang_feature_dir>/<video_name>.npy
+        Shape: (num_segments, max_v_len, clip_lang_dim)
+        Returns None if the directory is not set or the file is missing.
+        """
+        if self.lang_feature_dir is None:
+            return None
+        path = os.path.join(self.lang_feature_dir, name + ".npy")
+        if not os.path.exists(path):
+            return None
+        return np.load(path).astype(np.float32)
 
     def _load_duration(self):
         """Load video durations in seconds.
@@ -268,13 +301,36 @@ class RecursiveCaptionDataset(Dataset):
             num_sen = len(example["sentences"])
             single_video_features = []
             single_video_meta = []
+
+            sent_feat_all = self._load_sent_feature(video_name)
+            lang_feat_all = self._load_lang_feature(video_name)  # (num_seg, max_v_len, D_lang) or None
+
             for clip_idx in range(num_sen):
                 cur_data, cur_meta = self.clip_sentence_to_feature(
                     example["name"],
                     example["timestamps"][clip_idx],
                     example["sentences"][clip_idx],
                     video_feature,
+                    clip_idx,
                 )
+
+                sent_feat = None
+                if sent_feat_all is not None and clip_idx < len(sent_feat_all):
+                    sent_feat = sent_feat_all[clip_idx]
+                if sent_feat is not None:
+                    cur_data["sent_feat"] = sent_feat.astype(np.float32)
+
+                if lang_feat_all is not None and clip_idx < len(lang_feat_all):
+                    lang_feat = lang_feat_all[clip_idx]          # (max_v_len, D_lang)
+                    cur_data["lang_feature"] = lang_feat.astype(np.float32)
+                    cur_data["lang_mask"] = cur_data["input_mask"].copy()
+                else:
+                    D_lang = lang_feat_all.shape[-1] if lang_feat_all is not None else 1
+                    cur_data["lang_feature"] = np.zeros(
+                        (self.max_v_len + self.max_t_len, D_lang), dtype=np.float32
+                    )
+                    cur_data["lang_mask"] = np.zeros_like(cur_data["input_mask"])
+
                 single_video_features.append(cur_data)
                 single_video_meta.append(cur_meta)
             return single_video_features, single_video_meta
@@ -285,6 +341,7 @@ class RecursiveCaptionDataset(Dataset):
                     example["timestamp"],
                     example["sentence"],
                     video_feature,
+                    clip_idx,
                 )
             else:
                 cur_data, cur_meta = self.clip_sentence_to_feature(
@@ -292,10 +349,11 @@ class RecursiveCaptionDataset(Dataset):
                     example["timestamp"],
                     example["sentence"],
                     video_feature,
+                    clip_idx,
                 )
             return cur_data, cur_meta
 
-    def clip_sentence_to_feature(self, name, timestamp, sentence, video_feature):
+    def clip_sentence_to_feature(self, name, timestamp, sentence, video_feature, clip_idx=None):
         """Make features for a single clip-sentence pair.
         [CLS], [VID], ..., [VID], [SEP], [BOS], [WORD], ..., [WORD], [EOS]
 
@@ -337,12 +395,12 @@ class RecursiveCaptionDataset(Dataset):
             input_labels=np.array(input_labels).astype(np.int64),
             input_mask=np.array(input_mask).astype(np.float32),
             token_type_ids=np.array(token_type_ids).astype(np.int64),
-            video_feature=feat.astype(np.float32),
-        )
+            video_feature=feat.astype(np.float32)
+            )
         meta = dict(name=name, timestamp=timestamp, sentence=sentence)
         return data, meta
 
-    def clip_sentence_to_feature_untied(self, name, timestamp, sentence, video_feature):
+    def clip_sentence_to_feature_untied(self, name, timestamp, sentence, video_feature, clip_idx=None):
         """Make features for a single clip-sentence pair (untied mode).
 
         Args:
@@ -378,7 +436,7 @@ class RecursiveCaptionDataset(Dataset):
             text_mask=np.array(text_mask).astype(np.float32),
             text_labels=np.array(text_labels).astype(np.int64),
             video_feature=feat.astype(np.float32),
-            video_mask=np.array(video_mask).astype(np.float32),
+            video_mask=np.array(video_mask).astype(np.float32)
         )
         meta = dict(name=name, timestamp=timestamp, sentence=sentence)
         return data, meta
@@ -412,14 +470,12 @@ class RecursiveCaptionDataset(Dataset):
         feat = np.zeros((self.max_v_len + self.max_t_len, D), dtype=np.float32)
 
         if indexed_feat_len > max_v_l:
-            # Segment longer than the buffer → uniform downsampling
             downsample_indices = np.linspace(st, ed, max_v_l, endpoint=True).astype(int).tolist()
             feat[1:max_v_l + 1] = raw_feat[downsample_indices]
             valid_l = max_v_l
             video_tokens = [self.CLS_TOKEN] + [self.VID_TOKEN] * max_v_l + [self.SEP_TOKEN]
             video_mask = [1] * (max_v_l + 2)
         else:
-            # Segment fits → copy directly, zero-pad the rest
             valid_l = indexed_feat_len
             feat[1:valid_l + 1] = raw_feat[st:ed + 1]
             video_tokens = (
@@ -607,4 +663,4 @@ def single_sentence_collate(batch):
                    "gt_sentence": e[1]["sentence"]
                    } for e in batch]
     padded_batch = step_collate([e[0] for e in batch])
-    return padded_batch, None, batch_meta
+    return padded_batch, None, batch_meta                                                           
