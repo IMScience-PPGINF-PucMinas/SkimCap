@@ -38,7 +38,7 @@ class RecursiveCaptionDataset(Dataset):
         resulting segment is longer than (max_v_len - 2), it is uniformly
         downsampled; if shorter, it is zero-padded.
 
-    Timestamp positional encoding (Passo 5):
+    Timestamp positional encoding:
         A sinusoidal PE proportional to each clip's position *within the
         segment* is added on top of the clipped features, preserving fine-
         grained temporal ordering inside the window.
@@ -73,9 +73,6 @@ class RecursiveCaptionDataset(Dataset):
         self.max_t_len = max_t_len
         self.max_n_sen = max_n_sen
 
-        # ── Feature directories ───────────────────────────────────────────────
-        # video_feature_dir  → C3D features:  <dir>/v_<video_name>.npy
-        # flow_feature_dir   → Flow features: <dir>/<video_name>_bn.npy
         self.c3d_feature_dir = video_feature_dir
         self.flow_feature_dir = flow_feature_dir
 
@@ -90,10 +87,6 @@ class RecursiveCaptionDataset(Dataset):
         self.fix_missing()
 
         self.num_sens = None
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Duration loading
-    # ─────────────────────────────────────────────────────────────────────────
 
     def _load_duration(self):
         """Load video durations in seconds.
@@ -116,10 +109,6 @@ class RecursiveCaptionDataset(Dataset):
         else:
             raise NotImplementedError("Only support anet and yc2, got {}".format(self.dset_name))
         self.duration = duration
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Feature loading helpers
-    # ─────────────────────────────────────────────────────────────────────────
 
     def _c3d_path(self, video_name: str) -> str:
         return os.path.join(self.c3d_feature_dir, "v_{}.npy".format(video_name))
@@ -158,10 +147,6 @@ class RecursiveCaptionDataset(Dataset):
         flow_resampled = self._resample_flow(flow, target_len=c3d.shape[0])
         return np.concatenate([c3d, flow_resampled], axis=1)            # (N, 3072)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Temporal index conversion
-    # ─────────────────────────────────────────────────────────────────────────
-
     @classmethod
     def _convert_to_feat_index_st_ed(cls, feat_len: int, timestamp: list, duration: float) -> tuple:
         """Convert wall-clock [t_start, t_end] (seconds) to clip index [st, ed].
@@ -185,10 +170,6 @@ class RecursiveCaptionDataset(Dataset):
         st = min(st, ed - 1)
         assert st <= ed <= feat_len, "st {} <= ed {} <= feat_len {}".format(st, ed, feat_len)
         return st, ed
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Dataset setup
-    # ─────────────────────────────────────────────────────────────────────────
 
     def __len__(self):
         return len(self.data)
@@ -265,10 +246,6 @@ class RecursiveCaptionDataset(Dataset):
 
         logger.info("Loading complete! {} examples".format(len(self)))
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Feature-to-model conversion
-    # ─────────────────────────────────────────────────────────────────────────
-
     def convert_example_to_features(self, example):
         """example single sentence
         {"name": str,
@@ -285,8 +262,6 @@ class RecursiveCaptionDataset(Dataset):
         name = example["name"]
         video_name = name[2:] if self.dset_name == "anet" else name
 
-        # Load full C3D + flow feature once per video; segment slicing happens
-        # inside clip_sentence_to_feature via _load_indexed_video_feature.
         video_feature = self._load_video_feature(video_name)
 
         if self.recurrent:
@@ -340,7 +315,6 @@ class RecursiveCaptionDataset(Dataset):
             video_feature, timestamp, duration
         )
 
-        # Passo 5: sinusoidal timestamp PE within the selected segment window
         feat = self._inject_timestamp_encoding(feat, timestamp, video_tokens)
 
         text_tokens, text_mask = self._tokenize_pad_sentence(sentence)
@@ -384,7 +358,6 @@ class RecursiveCaptionDataset(Dataset):
             video_feature, timestamp, duration
         )
 
-        # Passo 5: timestamp PE for untied mode
         n_valid = int(sum(video_mask))
         video_tokens_proxy = (
             [self.VID_TOKEN] * n_valid + [self.PAD_TOKEN] * (self.max_v_len - n_valid)
@@ -409,10 +382,6 @@ class RecursiveCaptionDataset(Dataset):
         )
         meta = dict(name=name, timestamp=timestamp, sentence=sentence)
         return data, meta
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Temporally indexed video loading
-    # ─────────────────────────────────────────────────────────────────────────
 
     def _load_indexed_video_feature(self, raw_feat: np.ndarray, timestamp: list, duration: float):
         """Slice the video to the segment [t_start, t_end] and pack into the
@@ -494,10 +463,6 @@ class RecursiveCaptionDataset(Dataset):
 
         return feat, mask
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Passo 5: Timestamp positional encoding
-    # ─────────────────────────────────────────────────────────────────────────
-
     @staticmethod
     def _sinusoidal_pe(position: float, dim: int) -> np.ndarray:
         """Scalar sinusoidal encoding for a single normalised position in [0, 1]."""
@@ -542,10 +507,6 @@ class RecursiveCaptionDataset(Dataset):
 
         return feat
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Text tokenisation
-    # ─────────────────────────────────────────────────────────────────────────
-
     def _tokenize_pad_sentence(self, sentence):
         """[BOS], [WORD1], ..., [WORDN], [EOS], [PAD], ..., [PAD], len == max_t_len
         All non-PAD values are valid, with a mask value of 1.
@@ -577,11 +538,6 @@ class RecursiveCaptionDataset(Dataset):
         else:
             words = raw_words
         return " ".join(words)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Batch utilities
-# ─────────────────────────────────────────────────────────────────────────────
 
 def prepare_batch_inputs(batch, device, non_blocking=False):
     batch_inputs = dict()
