@@ -641,6 +641,7 @@ class RecursiveTransformer(nn.Module):
         token_type_ids_list: list[torch.Tensor],
         input_labels_list: Optional[list[torch.Tensor]],
         return_memory: bool = False,
+        lang_feats_list=None,
         lang_masks_list=None,
         sent_feats_list=None,
     ):
@@ -664,7 +665,7 @@ class RecursiveTransformer(nn.Module):
         semantic_losses: list[torch.Tensor] = []
 
         for idx in range(step_size):
-            lang_feat = lang_masks_list[idx] if lang_masks_list is not None else None
+            lang_feat = lang_feats_list[idx] if lang_feats_list is not None else None
             lang_mask = lang_masks_list[idx] if lang_masks_list is not None else None
             prev_ms, encoded_layers, prediction_scores, coverages = self.forward_step(
                 prev_ms,
