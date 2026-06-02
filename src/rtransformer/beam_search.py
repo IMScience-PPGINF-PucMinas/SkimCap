@@ -126,33 +126,24 @@ class BeamSearch(DecodeStrategy):
         # by setting prob(EOS) to be a very small number when < min_length
         self.ensure_min_length(log_probs)
 
-        # Multiply probs by the beam probability.
-        # logger.info("after log_probs {} {}".format(log_probs.shape, log_probs))
         log_probs += self.topk_log_probs.view(_B * self.beam_size, 1)
-        # logger.info("after log_probs {} {}".format(log_probs.shape, log_probs))
 
         self.block_ngram_repeats(log_probs)
 
-        # if the sequence ends now, then the penalty is the current
-        # length + 1, to include the EOS token, length_penalty is a float number
         step = len(self)
         length_penalty = self.length_penalty_func(step+1, self.length_penalty_alpha)
 
         # Flatten probs into a list of possibilities.
-        # pick topk in all the paths
         curr_scores = log_probs / length_penalty
         curr_scores = curr_scores.reshape(_B, self.beam_size * vocab_size)
-        # self.topk_scores and self.topk_ids => (N, B)
-        torch.topk(curr_scores,  self.beam_size, dim=-1,
-                   out=(self.topk_scores, self.topk_ids))
+        torch.topk(curr_scores, self.beam_size, dim=-1,
+                out=(self.topk_scores, self.topk_ids))
 
-        # Recover log probs.
-        # Length penalty is just a scalar. It doesn't matter if it's applied
-        # before or after the topk.
-        torch.mul(self.topk_scores, length_penalty, out=self.topk_log_probs)
+        # Recover log probs — reassign instead of using out= to avoid shape mismatch deprecation
+        self.topk_log_probs = self.topk_scores * length_penalty
 
-        # Resolve beam origin and map to batch index flat representation.
-        torch.div(self.topk_ids, vocab_size, out=self._batch_index)  # _batch_index (N * B)
+        # Resolve beam origin — use rounding_mode to avoid float output on integer division
+        self._batch_index = torch.div(self.topk_ids, vocab_size, rounding_mode='trunc')
         self._batch_index += self._beam_offset[:_B].unsqueeze(1)
         self.select_indices = self._batch_index.view(_B * self.beam_size)
 
@@ -161,7 +152,7 @@ class BeamSearch(DecodeStrategy):
         # Append last prediction.
         self.alive_seq = torch.cat(
             [self.alive_seq.index_select(0, self.select_indices),
-             self.topk_ids.view(_B * self.beam_size, 1)], -1)  # (N * B, step_size)
+            self.topk_ids.view(_B * self.beam_size, 1)], -1)  # (N * B, step_size)
 
         self.is_finished = self.topk_ids.eq(self.eos)  # (N, B)
         self.ensure_max_length()
