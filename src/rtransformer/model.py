@@ -853,11 +853,23 @@ class Translator:
         video_features_list: list[torch.Tensor],
         input_masks_list: list[torch.Tensor],
         token_type_ids_list: list[torch.Tensor],
+        lang_feats_list: Optional[list[Optional[torch.Tensor]]] = None,
+        lang_masks_list: Optional[list[Optional[torch.Tensor]]] = None,
     ) -> list[list[str]]:
         """Decode a full paragraph (multiple recurrent steps) for a batch.
 
+        Args:
+            input_ids_list:       [(N, L)] * step_size
+            video_features_list:  [(N, L, D_v)] * step_size
+            input_masks_list:     [(N, L)] * step_size
+            token_type_ids_list:  [(N, L)] * step_size
+            lang_feats_list:      [(N, L, D_lang)] * step_size or None — CLIP language
+                                  features; must match training-time inputs to avoid
+                                  train/inference discrepancy.
+            lang_masks_list:      [(N, L)] * step_size or None
+
         Returns:
-            List of paragraphs, each a list of decoded sentences (one per step).
+            List[bsz] of List[step_size] of decoded token-id sequences.
         """
         self.model.eval()
         bsz = input_ids_list[0].size(0)
@@ -870,24 +882,31 @@ class Translator:
 
         with torch.no_grad():
             for step_idx in range(step_size):
-                _, encoded_layers, _, coverages = self.model.forward_step(
-                    prev_ms,
-                    input_ids_list[step_idx],
-                    video_features_list[step_idx],
-                    input_masks_list[step_idx],
-                    token_type_ids_list[step_idx],
-                    coverages=coverages,
+                # Resolve CLIP features for this recurrent step (None-safe).
+                lang_feat = (
+                    lang_feats_list[step_idx]
+                    if lang_feats_list is not None
+                    else None
+                )
+                lang_mask = (
+                    lang_masks_list[step_idx]
+                    if lang_masks_list is not None
+                    else None
                 )
 
-                hidden = encoded_layers[-1]  # (N, L, D)
-                _, _, prediction_scores, _ = self.model.forward_step(
+                # Single forward_step call: returns prev_ms, encoded_layers,
+                # prediction_scores and updated coverages — no redundant passes.
+                prev_ms, encoded_layers, prediction_scores, coverages = self.model.forward_step(
                     prev_ms,
                     input_ids_list[step_idx],
                     video_features_list[step_idx],
                     input_masks_list[step_idx],
                     token_type_ids_list[step_idx],
                     coverages=coverages,
+                    lang_features=lang_feat,
+                    lang_mask=lang_mask,
                 )
+
                 text_logits = prediction_scores[:, self.config.max_v_len:, :]  # (N, max_t_len, V)
 
                 decoded_batch: list[list[int]] = [[] for _ in range(bsz)]
@@ -914,14 +933,5 @@ class Translator:
                     all_decoded[b][step_idx] = seq
                     logger.debug("step=%d batch=%d len=%d lp=%.3f score=%.3f",
                                  step_idx, b, len(seq), lp, score)
-
-                prev_ms, _, _, coverages = self.model.forward_step(
-                    prev_ms,
-                    input_ids_list[step_idx],
-                    video_features_list[step_idx],
-                    input_masks_list[step_idx],
-                    token_type_ids_list[step_idx],
-                    coverages=coverages,
-                )
 
         return all_decoded

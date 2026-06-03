@@ -197,7 +197,7 @@ if __name__=='__main__':
     parser.add_argument('-r', '--references', type=str, nargs='+',
                         help='reference files with ground truth captions to compare results against. delimited (,) str')
     parser.add_argument('-o', '--output', type=str, default=None, help='output file with final language metrics.')
-    parser.add_argument('-v', '--verbose', action='store_true', default='False',
+    parser.add_argument('-v', '--verbose', action='store_true', default=False,
                         help='Print intermediate steps.')
     parser.add_argument('--time', '--t', action = 'store_true',
                         help = 'Count running time.')

@@ -447,7 +447,7 @@ def get_args():
 
     parser.add_argument("--data_dir", required=True, help="dir containing the splits data files")
     parser.add_argument("--video_feature_dir", required=True, help="dir containing the video features")
-    parser.add_argument("--flow_feature_dir", required=True, help="dir containing the flow (BN) feature files")
+    parser.add_argument("--flow_feature_dir", default=None, help="dir containing the flow (BN) feature files")
     parser.add_argument("--lang_feature_dir", required=True, help="dir containing the lang feature")
     parser.add_argument("--sent_feature_dir", required=True, help="dir containing the sent feature")
     parser.add_argument("--v_duration_file", required=True, help="filepath to the duration file")

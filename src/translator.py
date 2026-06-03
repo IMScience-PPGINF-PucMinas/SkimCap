@@ -89,7 +89,8 @@ class Translator(object):
     # @classmethod
     def translate_batch_beam(self, input_ids_list, video_features_list, input_masks_list, token_type_ids_list,
                              rt_model, beam_size, n_best, min_length, max_length, block_ngram_repeat, exclusion_idxs,
-                             device, length_penalty_name, length_penalty_alpha):
+                             device, length_penalty_name, length_penalty_alpha,
+                             lang_feats_list=None, lang_masks_list=None):
         # prep the beam object
         base_beam = BeamSearch(
             beam_size,
@@ -107,20 +108,26 @@ class Translator(object):
             length_penalty_alpha=length_penalty_alpha
         )
 
-        def duplicate_for_beam(prev_ms, input_ids, video_features, input_masks, token_type_ids, beam_size):
+        def duplicate_for_beam(prev_ms, input_ids, video_features, input_masks, token_type_ids,
+                                beam_size, lang_feat=None, lang_mask=None):
             input_ids = tile(input_ids, beam_size, dim=0)  # (N * beam_size, L)
             video_features = tile(video_features, beam_size, dim=0)  # (N * beam_size, L, D_v)
             input_masks = tile(input_masks, beam_size, dim=0)
             token_type_ids = tile(token_type_ids, beam_size, dim=0)
             prev_ms = [tile(e, beam_size, dim=0) for e in prev_ms] \
                 if prev_ms[0] is not None else [None] * len(prev_ms)
-            return prev_ms, input_ids, video_features, input_masks, token_type_ids
+            if lang_feat is not None:
+                lang_feat = tile(lang_feat, beam_size, dim=0)  # (N * beam_size, L, D_lang)
+            if lang_mask is not None:
+                lang_mask = tile(lang_mask, beam_size, dim=0)
+            return prev_ms, input_ids, video_features, input_masks, token_type_ids, lang_feat, lang_mask
 
         def copy_for_memory(*inputs):
             return [copy.deepcopy(e) for e in inputs]
 
         def beam_decoding_step(prev_ms, coverages, input_ids, video_features, input_masks, token_type_ids,
                                model, max_v_len, max_t_len, beam_size,
+                               lang_feat=None, lang_mask=None,
                                start_idx=RCDataset.BOS, unk_idx=RCDataset.UNK):
             """
             prev_ms:    [(N, M, D)] * num_hidden_layers or None at first step.
@@ -129,12 +136,16 @@ class Translator(object):
             video_features: (N, L, D_v)
             input_masks: (N, L)
             token_type_ids: (N, L)
+            lang_feat:  (N, L, D_lang) or None — CLIP language features for this step.
+            lang_mask:  (N, L) or None
             """
             init_ms, init_input_ids, init_video_features, init_input_masks, init_token_type_ids = copy_for_memory(
                 prev_ms, input_ids, video_features, input_masks, token_type_ids)
 
-            prev_ms, input_ids, video_features, input_masks, token_type_ids = duplicate_for_beam(
-                prev_ms, input_ids, video_features, input_masks, token_type_ids, beam_size=beam_size)
+            prev_ms, input_ids, video_features, input_masks, token_type_ids, tiled_lang_feat, tiled_lang_mask = \
+                duplicate_for_beam(
+                    prev_ms, input_ids, video_features, input_masks, token_type_ids,
+                    beam_size=beam_size, lang_feat=lang_feat, lang_mask=lang_mask)
             # Passo 4: tile coverage vectors to match beam-expanded batch
             tiled_coverages = [
                 tile(c, beam_size, dim=0) if c is not None else None for c in coverages
@@ -149,7 +160,9 @@ class Translator(object):
                 # Passo 4: forward_step returns 4-tuple; coverages are read-only in the token loop
                 _, _, pred_scores, _ = model.forward_step(
                     copied_prev_ms, input_ids, video_features, input_masks, token_type_ids,
-                    coverages=tiled_coverages)
+                    coverages=tiled_coverages,
+                    lang_features=tiled_lang_feat,
+                    lang_mask=tiled_lang_mask)
                 pred_scores[:, RCDataset.UNK] = -1e10  # remove `[UNK]` token
                 logprobs = torch.log(F.softmax(pred_scores[:, dec_idx], dim=1))  # (N * beam_size, vocab_size)
                 beam.advance(logprobs)
@@ -188,7 +201,9 @@ class Translator(object):
             # Passo 4: capture updated coverages from the memory-update step (non-tiled)
             cur_ms, _, pred_scores, new_coverages = model.forward_step(
                 init_ms, init_input_ids, init_video_features, init_input_masks, init_token_type_ids,
-                coverages=coverages)
+                coverages=coverages,
+                lang_features=lang_feat,
+                lang_mask=lang_mask)
 
             return cur_ms, new_coverages, init_input_ids[:, max_v_len:]
 
@@ -206,23 +221,30 @@ class Translator(object):
             step_size = len(input_ids_list)
             dec_res_list = []
             for idx in range(step_size):
+                lang_feat = lang_feats_list[idx] if lang_feats_list is not None else None
+                lang_mask = lang_masks_list[idx] if lang_masks_list is not None else None
                 prev_ms, coverages, dec_res = beam_decoding_step(
                     prev_ms, coverages,
                     input_ids_list[idx], video_features_list[idx],
                     input_masks_list[idx], token_type_ids_list[idx],
-                    rt_model, config.max_v_len, config.max_t_len, beam_size)
+                    rt_model, config.max_v_len, config.max_t_len, beam_size,
+                    lang_feat=lang_feat, lang_mask=lang_mask)
                 dec_res_list.append(dec_res)
             return dec_res_list
 
     def translate_batch_greedy(self, input_ids_list, video_features_list, input_masks_list, token_type_ids_list,
-                               rt_model):
+                               rt_model, lang_feats_list=None, lang_masks_list=None):
         def greedy_decoding_step(prev_ms, coverages, input_ids, video_features, input_masks, token_type_ids,
-                            model, max_v_len, max_t_len, start_idx=RCDataset.BOS, unk_idx=RCDataset.UNK):
+                            model, max_v_len, max_t_len,
+                            lang_feat=None, lang_mask=None,
+                            start_idx=RCDataset.BOS, unk_idx=RCDataset.UNK):
             """RTransformer greedy decoding for one recurrent step.
 
             coverages: per-layer coverage tensors carried across recurrent steps
                        (Passo 4 – coverage mechanism). Passed through forward_step
                        and returned so the caller can thread them to the next step.
+            lang_feat: (N, L, D_lang) or None — CLIP language features for this step.
+            lang_mask: (N, L) or None
             """
             bsz = len(input_ids)
             next_symbols = torch.LongTensor([start_idx] * bsz)  # (N, )
@@ -233,7 +255,9 @@ class Translator(object):
                 # Passo 4: forward_step now returns coverages as 4th value
                 _, _, pred_scores, _ = model.forward_step(
                     copied_prev_ms, input_ids, video_features, input_masks, token_type_ids,
-                    coverages=coverages)
+                    coverages=coverages,
+                    lang_features=lang_feat,
+                    lang_mask=lang_mask)
                 # suppress unk token; (N, L, vocab_size)
                 pred_scores[:, :, unk_idx] = -1e10
                 next_words = pred_scores[:, dec_idx].max(1)[1]
@@ -244,7 +268,9 @@ class Translator(object):
             # Passo 4: capture updated coverages from the memory-update step
             cur_ms, _, pred_scores, new_coverages = model.forward_step(
                 prev_ms, input_ids, video_features, input_masks, token_type_ids,
-                coverages=coverages)
+                coverages=coverages,
+                lang_features=lang_feat,
+                lang_mask=lang_mask)
 
             return cur_ms, new_coverages, input_ids[:, max_v_len:]  # (N, max_t_len)
 
@@ -262,11 +288,14 @@ class Translator(object):
             step_size = len(input_ids_list)
             dec_seq_list = []
             for idx in range(step_size):
+                lang_feat = lang_feats_list[idx] if lang_feats_list is not None else None
+                lang_mask = lang_masks_list[idx] if lang_masks_list is not None else None
                 prev_ms, coverages, dec_seq = greedy_decoding_step(
                     prev_ms, coverages,
                     input_ids_list[idx], video_features_list[idx],
                     input_masks_list[idx], token_type_ids_list[idx],
-                    rt_model, config.max_v_len, config.max_t_len)
+                    rt_model, config.max_v_len, config.max_t_len,
+                    lang_feat=lang_feat, lang_mask=lang_mask)
                 dec_seq_list.append(dec_seq)
             return dec_seq_list
 
@@ -391,7 +420,8 @@ class Translator(object):
             next_symbols = next_words
         return text_input_ids  # (N, Lt)
 
-    def translate_batch(self, model_inputs, use_beam=False, recurrent=True, untied=False, xl=False, mtrans=False):
+    def translate_batch(self, model_inputs, use_beam=False, recurrent=True, untied=False, xl=False, mtrans=False,
+                        lang_feats_list=None, lang_masks_list=None):
         """while we used *_list as the input names, they could be non-list for single sentence decoding case"""
         if use_beam:
             if recurrent:
@@ -402,7 +432,8 @@ class Translator(object):
                     min_length=3, max_length=self.opt.max_t_len - 2,
                     block_ngram_repeat=self.opt.block_ngram_repeat, exclusion_idxs=[], device=self.device,
                     length_penalty_name=self.opt.length_penalty_name,
-                    length_penalty_alpha=self.opt.length_penalty_alpha)
+                    length_penalty_alpha=self.opt.length_penalty_alpha,
+                    lang_feats_list=lang_feats_list, lang_masks_list=lang_masks_list)
             else:
                 raise NotImplementedError
         else:
@@ -413,7 +444,8 @@ class Translator(object):
                         input_ids_list, video_features_list, input_masks_list, token_type_ids_list, self.model)
                 else:
                     return self.translate_batch_greedy(
-                        input_ids_list, video_features_list, input_masks_list, token_type_ids_list, self.model)
+                        input_ids_list, video_features_list, input_masks_list, token_type_ids_list, self.model,
+                        lang_feats_list=lang_feats_list, lang_masks_list=lang_masks_list)
             else:  # single sentence
                 if untied or mtrans:
                     video_features, video_masks, text_input_ids, text_masks, text_input_labels = model_inputs

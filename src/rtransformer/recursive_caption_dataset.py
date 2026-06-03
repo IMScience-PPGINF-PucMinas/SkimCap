@@ -241,9 +241,12 @@ class RecursiveCaptionDataset(Dataset):
             video_name = e["name"][2:] if self.dset_name == "anet" else e["name"]
             if video_name not in self.duration:
                 self.missing_video_names.append(video_name)
-            for p in [self._c3d_path(video_name), self._flow_path(video_name)]:
+
+            paths_to_check = [self._c3d_path(video_name)]
+            for p in paths_to_check:
                 if not os.path.exists(p):
                     self.missing_video_names.append(video_name)
+            
         logger.info("Missing {} features (clips/sentences) from {} videos".format(
             len(self.missing_video_names), len(set(self.missing_video_names))))
         logger.info("Missing {}".format(set(self.missing_video_names)))
