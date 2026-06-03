@@ -39,7 +39,7 @@ time python src/train.py \
     --max_n_sen ${max_n_sen} \
     --max_t_len ${max_t_len} \
     --max_v_len ${max_v_len} \
-    --video_feature_size 3072 \
+    --video_feature_size 2048 \
     --lang_feature_size 512 \
     --n_epoch 50 \
     --use_beam \
