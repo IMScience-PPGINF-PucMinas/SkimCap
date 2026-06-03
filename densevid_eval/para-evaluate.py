@@ -155,7 +155,7 @@ class ANETcaptions(object):
             else:
                 output[method] = score
                 if self.verbose:
-                    print("%s: %0.3f" % (method, output[method]))
+                    print("%s: %2.4f" % (method, 100*output[method]))
                 i = scores.argmin()
                 if i not in hard_samples:
                     hard_samples[i] = []
@@ -169,8 +169,8 @@ class ANETcaptions(object):
 
         # self.hard_samples = {gt_vid_ids[i]: v for i, v in hard_samples.items()}
         self.easy_samples = {gt_vid_ids[i]: v for i, v in easy_samples.items()}
-        print("easy samples:")
-        print(self.easy_samples)
+        #print("easy samples:")
+        #print(self.easy_samples)
         return output
 
 def main(args):
@@ -182,12 +182,12 @@ def main(args):
     evaluator.evaluate()
     output = {}
     # Output the results
-    for metric, score in evaluator.scores.items():
-        print('| %s: %2.4f'%(metric, 100*score))
-        output[metric] = score
-    print(output)
-    json.dump(output, open(args.output, 'w'))
-    print(output)
+    #for metric, score in evaluator.scores.items():
+    #    print('| %s: %2.4f'%(metric, 100*score))
+    #    output[metric] = score
+    #print(output)
+    #json.dump(output, open(args.output, 'w'))
+    #print(output)
 
 import time
 if __name__=='__main__':
