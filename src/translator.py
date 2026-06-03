@@ -113,7 +113,7 @@ class Translator(object):
             input_masks = tile(input_masks, beam_size, dim=0)
             token_type_ids = tile(token_type_ids, beam_size, dim=0)
             prev_ms = [tile(e, beam_size, dim=0) for e in prev_ms] \
-                if prev_ms[0] is not None else [None] * len(input_ids)
+                if prev_ms[0] is not None else [None] * len(prev_ms)
             return prev_ms, input_ids, video_features, input_masks, token_type_ids
 
         def copy_for_memory(*inputs):
@@ -166,7 +166,7 @@ class Translator(object):
                     input_masks = input_masks.index_select(0, select_indices)
                     token_type_ids = token_type_ids.index_select(0, select_indices)
                     if prev_ms[0] is None:
-                        prev_ms = [None] * len(select_indices)
+                        prev_ms = [None] * len(prev_ms)
                     else:
                         prev_ms = [e.index_select(0, select_indices) for e in prev_ms]
                     # Reindex tiled coverages to match surviving beams
