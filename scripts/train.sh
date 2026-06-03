@@ -60,5 +60,5 @@ time python src/train.py \
     --num_attention_heads 12 \
     --ema_decay 0.9996 \
     --recurrent \
-    --exp_id clip_b128 \
+    --exp_id clip_b128_woflow \
     "$@"
