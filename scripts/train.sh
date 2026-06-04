@@ -6,8 +6,9 @@ v_feat_dir="./video_feature/cd_anet_feat"
 dur_file="./video_feature/anet_duration_frame.csv"
 word2idx_path="./cache/${dset_name}_word2idx.json"
 glove_path="./cache/${dset_name}_vocab_glove.pt"
-lang_feat_dir="./video_feature/lang_feature"    # ajuste para seu path
-sent_feat_dir="./video_feature/sent_feature"    # ajuste para seu path
+lang_feat_dir="./video_feature/lang_feature"
+sent_feat_dir="./video_feature/sent_feature"
+flow_feat_dir="./video_feature/rt_anet_feat/trainval"
 
 echo "---------------------------------------------------------"
 echo ">>>>>>>> Running training on ${dset_name} dataset (CLIP + batch 128)"
@@ -29,6 +30,7 @@ time python src/train.py \
     --dset_name ${dset_name} \
     --data_dir ${data_dir} \
     --video_feature_dir ${v_feat_dir} \
+    --flow_feature_dir ${flow_feat_dir} \
     --v_duration_file ${dur_file} \
     --word2idx_path ${word2idx_path} \
     --glove_path ${glove_path} \
@@ -37,13 +39,13 @@ time python src/train.py \
     --max_n_sen ${max_n_sen} \
     --max_t_len ${max_t_len} \
     --max_v_len ${max_v_len} \
-    --video_feature_size 2048 \
+    --video_feature_size 3072  \
     --lang_feature_size 512 \
-    --n_epoch 100 \
+    --n_epoch 50 \
     --use_beam \
     --beam_size 2 \
     --lr 1.5e-4 \
-    --lr_warmup_proportion 0.15 \
+    --lr_warmup_proportion 0.1 \
     --label_smoothing 0.05 \
     --contrastive_temp 0.10 \
     --contrastive_weight 0.1 \
@@ -59,5 +61,5 @@ time python src/train.py \
     --num_attention_heads 12 \
     --ema_decay 0.9996 \
     --recurrent \
-    --exp_id clip_b128_woflow \
+    --exp_id clip_b128_flow_lang_sent \
     "$@"
