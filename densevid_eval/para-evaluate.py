@@ -180,14 +180,14 @@ def main(args):
                              verbose=args.verbose,
                              all_scorer=args.all_scorer)
     evaluator.evaluate()
-    #output = {}
+    output = {}
     # Output the results
-    #for metric, score in evaluator.scores.items():
-    #    print('| %s: %2.4f'%(metric, 100*score))
-    #    output[metric] = score
-    #print(output)
-    #json.dump(output, open(args.output, 'w'))
-    #print(output)
+    for metric, score in evaluator.scores.items():
+        print('| %s: %2.4f'%(metric, 100*score))
+        output[metric] = score
+    print(output)
+    json.dump(output, open(args.output, 'w'))
+    print(output)
 
 import time
 if __name__=='__main__':
