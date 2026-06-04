@@ -39,7 +39,7 @@ time python src/train.py \
     --max_v_len ${max_v_len} \
     --video_feature_size 2048 \
     --lang_feature_size 512 \
-    --n_epoch 100 \
+    --n_epoch 50 \
     --lr 1.5e-4 \
     --lr_warmup_proportion 0.15 \
     --label_smoothing 0.05 \
