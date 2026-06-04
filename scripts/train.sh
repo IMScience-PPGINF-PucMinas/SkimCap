@@ -40,8 +40,6 @@ time python src/train.py \
     --video_feature_size 2048 \
     --lang_feature_size 512 \
     --n_epoch 100 \
-    --use_beam \
-    --beam_size 2 \
     --lr 1.5e-4 \
     --lr_warmup_proportion 0.15 \
     --label_smoothing 0.05 \
