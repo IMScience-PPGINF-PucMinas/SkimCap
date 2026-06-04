@@ -176,9 +176,9 @@ class RecursiveCaptionDataset(Dataset):
         Output: (N, 3072) float32
         """
         c3d = np.load(self._c3d_path(video_name)).astype(np.float32)   # (N, 2048)
-        #flow = np.load(self._flow_path(video_name))                     # (M, 1024)
-        #flow_resampled = self._resample_flow(flow, target_len=c3d.shape[0])
-        return c3d#np.concatenate([c3d, flow_resampled], axis=1)            # (N, 3072)
+        flow = np.load(self._flow_path(video_name))                     # (M, 1024)
+        flow_resampled = self._resample_flow(flow, target_len=c3d.shape[0])
+        return np.concatenate([c3d, flow_resampled], axis=1)            # (N, 3072)
 
     @classmethod
     def _convert_to_feat_index_st_ed(cls, feat_len: int, timestamp: list, duration: float) -> tuple:
