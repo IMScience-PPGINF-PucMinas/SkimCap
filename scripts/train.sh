@@ -26,7 +26,7 @@ else
     exit 1
 fi
 
-time python src/train.py \
+time python -X faulthandler src/train.py \
     --dset_name ${dset_name} \
     --data_dir ${data_dir} \
     --video_feature_dir ${v_feat_dir} \
