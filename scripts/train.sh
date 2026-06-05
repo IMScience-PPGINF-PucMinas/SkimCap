@@ -35,7 +35,7 @@ time python src/train.py \
     --v_duration_file ${dur_file} \
     --word2idx_path ${word2idx_path} \
     --glove_path ${glove_path} \
-    --feature_type resnet \
+    --feature_type c3d \
     --lang_feature_dir ${lang_feat_dir} \
     --sent_feature_dir ${sent_feat_dir} \
     --max_n_sen ${max_n_sen} \
@@ -56,12 +56,12 @@ time python src/train.py \
     --val_batch_size 64 \
     --max_es_cnt 15 \
     --num_workers 8 \
-    --n_memory_cells 8 \
+    --n_memory_cells 1 \
     --num_hidden_layers 4 \
     --intermediate_size 768 \
     --hidden_size 768 \
     --num_attention_heads 12 \
     --ema_decay 0.9996 \
     --recurrent \
-    --exp_id clip_b128_flow_lang_sent \
+    --exp_id clip_b128_c3d_flow_lang_sent \
     "$@"
