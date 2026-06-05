@@ -51,7 +51,7 @@ time python src/train.py \
     --contrastive_weight 0.1 \
     --sent_loss_weight 0.15 \
     --batch_size 96 \
-    --val_batch_size 80 \
+    --val_batch_size 64 \
     --max_es_cnt 15 \
     --num_workers 8 \
     --n_memory_cells 8 \
@@ -61,5 +61,5 @@ time python src/train.py \
     --num_attention_heads 12 \
     --ema_decay 0.9996 \
     --recurrent \
-    --exp_id clip_b128_flow_lang_sent \
+    --exp_id clip_b96_flow_lang_sent \
     "$@"
