@@ -243,8 +243,6 @@ class RecursiveCaptionDataset(Dataset):
                 self.missing_video_names.append(video_name)
 
             paths_to_check = [self._c3d_path(video_name)]
-            if self.flow_feature_dir is not None:
-                paths_to_check.append(self._flow_path(video_name))
             for p in paths_to_check:
                 if not os.path.exists(p):
                     self.missing_video_names.append(video_name)
@@ -330,18 +328,11 @@ class RecursiveCaptionDataset(Dataset):
                     cur_data["lang_feature"] = lang_feat.astype(np.float32)
                     cur_data["lang_mask"] = cur_data["input_mask"].copy()
                 else:
-                    # Usa D_lang do arquivo se disponível, senão infere do clip anterior,
-                    # senão fallback para 512 (padrão CLIP ViT-B/32).
-                    if lang_feat_all is not None and len(lang_feat_all) > 0:
-                        D_lang = lang_feat_all.shape[-1]
-                    else:
-                        D_lang = 512
+                    D_lang = lang_feat_all.shape[-1] if lang_feat_all is not None else 1
                     cur_data["lang_feature"] = np.zeros(
                         (self.max_v_len + self.max_t_len, D_lang), dtype=np.float32
                     )
-                    cur_data["lang_mask"] = np.zeros(
-                        self.max_v_len + self.max_t_len, dtype=np.float32
-                    )
+                    cur_data["lang_mask"] = np.zeros_like(cur_data["input_mask"])
 
                 single_video_features.append(cur_data)
                 single_video_meta.append(cur_meta)
@@ -675,4 +666,4 @@ def single_sentence_collate(batch):
                    "gt_sentence": e[1]["sentence"]
                    } for e in batch]
     padded_batch = step_collate([e[0] for e in batch])
-    return padded_batch, None, batch_meta
+    return padded_batch, None, batch_meta                                                           
