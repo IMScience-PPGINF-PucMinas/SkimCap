@@ -50,7 +50,7 @@ time python src/train.py \
     --contrastive_temp 0.10 \
     --contrastive_weight 0.1 \
     --sent_loss_weight 0.15 \
-    --batch_size 96 \
+    --batch_size 80 \
     --val_batch_size 64 \
     --max_es_cnt 15 \
     --num_workers 0 \
