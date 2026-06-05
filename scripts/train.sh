@@ -53,7 +53,7 @@ time python src/train.py \
     --batch_size 96 \
     --val_batch_size 64 \
     --max_es_cnt 15 \
-    --num_workers 8 \
+    --num_workers 0 \
     --n_memory_cells 8 \
     --num_hidden_layers 4 \
     --intermediate_size 768 \
