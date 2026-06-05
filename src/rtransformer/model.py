@@ -682,44 +682,32 @@ class RecursiveTransformer(nn.Module):
             memory_list.append(list(prev_ms))
             prediction_scores_list.append(prediction_scores)
 
-            if self.use_contrastive:
-                bos_hidden = encoded_layers[-1][:, self.config.max_v_len, :]  # (N, D)
-                if sent_feats_list is not None:
-                    target_sent = sent_feats_list[idx]
+        if self.use_contrastive:
+            bos_hidden = encoded_layers[-1][:, self.config.max_v_len, :]  # (N, D)
+            if sent_feats_list is not None:
+                target_sent = sent_feats_list[idx]
+                if target_sent is not None:
+                    pred_sent = F.normalize(self.sent_proj(bos_hidden), dim=-1)  # (N, D)
+                    target_sent = F.normalize(target_sent, dim=-1)               # (N, D)
+                    semantic_loss = (
+                        1 - F.cosine_similarity(pred_sent, target_sent, dim=-1)
+                    ).mean()
+                    semantic_losses.append(semantic_loss)
+            sentence_embs.append(self.contrastive_proj(bos_hidden))
 
-                    if target_sent is not None:
+                if return_memory:
+                    return memory_list
 
-                        pred_sent = self.sent_proj(
-                            bos_hidden
-                        )
+                if input_labels_list is None:
+                    raise ValueError("input_labels_list is required when return_memory=False")
 
-                        semantic_loss = (
-                            1 -
-                            F.cosine_similarity(
-                                pred_sent,
-                                target_sent,
-                                dim=-1
-                            )
-                        ).mean()
-
-                        semantic_losses.append(
-                            semantic_loss
-                        )
-                sentence_embs.append(self.contrastive_proj(bos_hidden))
-
-        if return_memory:
-            return memory_list
-
-        if input_labels_list is None:
-            raise ValueError("input_labels_list is required when return_memory=False")
-
-        caption_loss = sum(
-            self.loss_func(
-                prediction_scores_list[i].view(-1, self.config.vocab_size),
-                input_labels_list[i].view(-1),
-            )
-            for i in range(step_size)
-        )
+                caption_loss = sum(
+                    self.loss_func(
+                        prediction_scores_list[i].view(-1, self.config.vocab_size),
+                        input_labels_list[i].view(-1),
+                    )
+                    for i in range(step_size)
+                )
 
         if self.use_contrastive and len(sentence_embs) >= 2:
             contrastive_loss = self._contrastive_loss(sentence_embs)
