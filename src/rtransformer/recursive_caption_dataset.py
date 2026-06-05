@@ -61,7 +61,8 @@ class RecursiveCaptionDataset(Dataset):
     IGNORE = -1  # used to calculate loss
 
     def __init__(self, dset_name, data_dir, video_feature_dir, flow_feature_dir, duration_file, word2idx_path,
-                 max_t_len, max_v_len, max_n_sen, mode="train", recurrent=True, untied=False, lang_feature_dir=None, sent_feature_dir=None,):
+                 max_t_len, max_v_len, max_n_sen, mode="train", recurrent=True, untied=False,
+                 lang_feature_dir=None, sent_feature_dir=None, feature_type="c3d"):
         self.dset_name = dset_name
         self.word2idx = load_json(word2idx_path)
         self.idx2word = {int(v): k for k, v in self.word2idx.items()}
@@ -72,6 +73,10 @@ class RecursiveCaptionDataset(Dataset):
         self.max_v_len = max_v_len
         self.max_t_len = max_t_len
         self.max_n_sen = max_n_sen
+
+        if feature_type not in ("c3d", "resnet"):
+            raise ValueError(f"feature_type must be 'c3d' or 'resnet', got '{feature_type}'")
+        self.feature_type = feature_type
 
         self.c3d_feature_dir = video_feature_dir
         self.flow_feature_dir = flow_feature_dir
@@ -146,39 +151,64 @@ class RecursiveCaptionDataset(Dataset):
     def _c3d_path(self, video_name: str) -> str:
         return os.path.join(self.c3d_feature_dir, "v_{}.npy".format(video_name))
 
+    def _resnet_path(self, video_name: str) -> str:
+        return os.path.join(self.c3d_feature_dir, "{}_resnet.npy".format(video_name))
+
     def _flow_path(self, video_name: str) -> str:
         return os.path.join(self.flow_feature_dir, "{}_bn.npy".format(video_name))
 
     @staticmethod
-    def _resample_flow(flow: np.ndarray, target_len: int) -> np.ndarray:
-        """Linearly resample flow from its original length to *target_len*.
+    def _resample_features(feat: np.ndarray, target_len: int) -> np.ndarray:
+        """Linearly resample *feat* from its original length to *target_len*.
 
         Args:
-            flow:       (src_len, 1024) float array
-            target_len: desired number of clips (matches C3D clip count)
+            feat:       (src_len, D) float array
+            target_len: desired number of temporal steps
 
         Returns:
-            (target_len, 1024) float32 array
+            (target_len, D) float32 array
         """
-        src_len = flow.shape[0]
+        src_len = feat.shape[0]
         if src_len == target_len:
-            return flow.astype(np.float32)
+            return feat.astype(np.float32)
         x_src = np.linspace(0.0, 1.0, src_len)
         x_tgt = np.linspace(0.0, 1.0, target_len)
-        f = interp1d(x_src, flow, axis=0, kind="linear", assume_sorted=True)
+        f = interp1d(x_src, feat, axis=0, kind="linear", assume_sorted=True)
         return f(x_tgt).astype(np.float32)
 
-    def _load_video_feature(self, video_name: str) -> np.ndarray:
-        """Load and concatenate C3D + flow features for the full video.
+    # Keep the old name as an alias so existing call-sites still work.
+    @staticmethod
+    def _resample_flow(flow: np.ndarray, target_len: int) -> np.ndarray:
+        return RecursiveCaptionDataset._resample_features(flow, target_len)
 
-        C3D  : (N, 2048) — used as-is
-        Flow : (M, 1024) — resampled to (N, 1024)
-        Output: (N, 3072) float32
+    def _load_video_feature(self, video_name: str) -> np.ndarray:
+        """Load video features for the full video.
+
+        C3D mode  (feature_type='c3d'):
+            C3D  : (N, 2048) — fixed 100 clips, used as-is
+            Flow : (M, 1024) — resampled to (N, 1024)  [when flow_feature_dir is set]
+            Output: (N, 2048) or (N, 3072) float32
+
+        ResNet mode (feature_type='resnet'):
+            ResNet: (n, 2048) — variable n frames sampled at 2 fps,
+                    resampled to (max_v_len, 2048) via linear interpolation
+            Flow  : (M, 1024) — resampled to (max_v_len, 1024) [when flow_feature_dir is set]
+            Output: (max_v_len, 2048) or (max_v_len, 3072) float32
         """
-        c3d = np.load(self._c3d_path(video_name)).astype(np.float32)   # (N, 2048)
-        flow = np.load(self._flow_path(video_name))                     # (M, 1024)
-        flow_resampled = self._resample_flow(flow, target_len=c3d.shape[0])
-        return np.concatenate([c3d, flow_resampled], axis=1)            # (N, 3072)
+        if self.feature_type == "resnet":
+            raw = np.load(self._resnet_path(video_name)).astype(np.float32)  # (n, 2048)
+            target_len = self.max_v_len
+            vis = self._resample_features(raw, target_len)                    # (max_v_len, 2048)
+        else:
+            vis = np.load(self._c3d_path(video_name)).astype(np.float32)     # (N, 2048)
+            target_len = vis.shape[0]
+
+        if self.flow_feature_dir is not None:
+            flow = np.load(self._flow_path(video_name))                       # (M, 1024)
+            flow_resampled = self._resample_features(flow, target_len)        # (target_len, 1024)
+            return np.concatenate([vis, flow_resampled], axis=1)              # (target_len, 3072)
+
+        return vis
 
     @classmethod
     def _convert_to_feat_index_st_ed(cls, feat_len: int, timestamp: list, duration: float) -> tuple:
@@ -666,4 +696,4 @@ def single_sentence_collate(batch):
                    "gt_sentence": e[1]["sentence"]
                    } for e in batch]
     padded_batch = step_collate([e[0] for e in batch])
-    return padded_batch, None, batch_meta                                                           
+    return padded_batch, None, batch_meta

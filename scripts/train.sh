@@ -2,7 +2,7 @@
 
 dset_name="anet"
 data_dir="/home/lvcardoso/SkimCap/densevid_eval/${dset_name}_data"
-v_feat_dir="./video_feature/cd_anet_feat"
+v_feat_dir="./video_feature/rt_anet_feat/trainval"#/cd_anet_feat"
 dur_file="./video_feature/anet_duration_frame.csv"
 word2idx_path="./cache/${dset_name}_word2idx.json"
 glove_path="./cache/${dset_name}_vocab_glove.pt"
@@ -34,6 +34,7 @@ time python src/train.py \
     --v_duration_file ${dur_file} \
     --word2idx_path ${word2idx_path} \
     --glove_path ${glove_path} \
+    --feature_type resnet \
     --lang_feature_dir ${lang_feat_dir} \
     --sent_feature_dir ${sent_feat_dir} \
     --max_n_sen ${max_n_sen} \
