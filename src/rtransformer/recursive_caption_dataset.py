@@ -266,17 +266,23 @@ class RecursiveCaptionDataset(Dataset):
         self._load_data(data_path)
 
     def fix_missing(self):
-        """Filter out videos whose C3D or flow feature file is missing."""
+        """Filter out videos whose feature file is missing."""
         for e in tqdm(self.data):
             video_name = e["name"][2:] if self.dset_name == "anet" else e["name"]
             if video_name not in self.duration:
                 self.missing_video_names.append(video_name)
+                continue
 
-            paths_to_check = [self._c3d_path(video_name)]
+            # Check the correct feature path based on feature_type
+            if self.feature_type == "resnet":
+                paths_to_check = [self._resnet_path(video_name)]
+            else:
+                paths_to_check = [self._c3d_path(video_name)]
+
             for p in paths_to_check:
                 if not os.path.exists(p):
                     self.missing_video_names.append(video_name)
-            
+
         logger.info("Missing {} features (clips/sentences) from {} videos".format(
             len(self.missing_video_names), len(set(self.missing_video_names))))
         logger.info("Missing {}".format(set(self.missing_video_names)))
