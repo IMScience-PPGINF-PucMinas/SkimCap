@@ -695,19 +695,19 @@ class RecursiveTransformer(nn.Module):
                     semantic_losses.append(semantic_loss)
             sentence_embs.append(self.contrastive_proj(bos_hidden))
 
-                if return_memory:
-                    return memory_list
+        if return_memory:
+            return memory_list
 
-                if input_labels_list is None:
-                    raise ValueError("input_labels_list is required when return_memory=False")
+        if input_labels_list is None:
+            raise ValueError("input_labels_list is required when return_memory=False")
 
-                caption_loss = sum(
-                    self.loss_func(
-                        prediction_scores_list[i].view(-1, self.config.vocab_size),
-                        input_labels_list[i].view(-1),
-                    )
-                    for i in range(step_size)
-                )
+        caption_loss = sum(
+            self.loss_func(
+                prediction_scores_list[i].view(-1, self.config.vocab_size),
+                input_labels_list[i].view(-1),
+            )
+            for i in range(step_size)
+        )
 
         if self.use_contrastive and len(sentence_embs) >= 2:
             contrastive_loss = self._contrastive_loss(sentence_embs)
