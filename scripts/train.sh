@@ -9,7 +9,7 @@ word2idx_path="./cache/${dset_name}_word2idx.json"
 glove_path="./cache/${dset_name}_vocab_glove.pt"
 lang_feat_dir="./video_feature/lang_feature"
 sent_feat_dir="./video_feature/sent_feature"
-flow_feat_dir="./video_feature/rt_anet_feat/trainval"
+#flow_feat_dir="./video_feature/rt_anet_feat/trainval"
 
 echo "---------------------------------------------------------"
 echo ">>>>>>>> Running training on ${dset_name} dataset (CLIP + batch 128)"
@@ -31,7 +31,7 @@ time python src/train.py \
     --dset_name ${dset_name} \
     --data_dir ${data_dir} \
     --video_feature_dir ${v_feat_dir} \
-    --flow_feature_dir ${flow_feat_dir} \
+#    --flow_feature_dir ${flow_feat_dir} \
     --v_duration_file ${dur_file} \
     --word2idx_path ${word2idx_path} \
     --glove_path ${glove_path} \
