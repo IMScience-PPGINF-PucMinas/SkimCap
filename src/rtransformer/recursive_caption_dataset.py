@@ -121,16 +121,19 @@ class RecursiveCaptionDataset(Dataset):
     def _load_lang_feature(self, name):
         """Load CLIP language features for all segments of a video.
 
-        Expected file: <lang_feature_dir>/<video_name>.npy
+        Expected file: <lang_feature_dir>/<video_name>.json
         Shape: (num_segments, max_v_len, clip_lang_dim)
         Returns None if the directory is not set or the file is missing.
         """
         if self.lang_feature_dir is None:
             return None
-        path = os.path.join(self.lang_feature_dir, name + ".npy")
+        path = os.path.join(self.lang_feature_dir, name + ".json")
         if not os.path.exists(path):
             return None
-        return np.load(path).astype(np.float32)
+        feat = load_json(path)
+        if feat is None:
+            return None
+        return np.asarray(feat, dtype=np.float32)
 
     def _load_duration(self):
         """Load video durations in seconds.
