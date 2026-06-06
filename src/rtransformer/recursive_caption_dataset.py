@@ -62,7 +62,8 @@ class RecursiveCaptionDataset(Dataset):
 
     def __init__(self, dset_name, data_dir, video_feature_dir, flow_feature_dir, duration_file, word2idx_path,
                  max_t_len, max_v_len, max_n_sen, mode="train", recurrent=True, untied=False,
-                 lang_feature_dir=None, sent_feature_dir=None, feature_type="c3d"):
+                 lang_feature_dir=None, sent_feature_dir=None, feature_type="c3d",
+                 lang_feature_size=0):
         self.dset_name = dset_name
         self.word2idx = load_json(word2idx_path)
         self.idx2word = {int(v): k for k, v in self.word2idx.items()}
@@ -82,6 +83,11 @@ class RecursiveCaptionDataset(Dataset):
         self.flow_feature_dir = flow_feature_dir
         self.lang_feature_dir = lang_feature_dir
         self.sent_feature_dir = sent_feature_dir
+        # Fallback dimension used when lang_feature_dir is None or a file is
+        # missing.  0 means lang features are fully disabled: no zero-tensor is
+        # inserted into cur_data, so the collate function and the model both
+        # see None consistently.
+        self.lang_feature_size = lang_feature_size
 
         self.mode = mode
         self.recurrent = recurrent
@@ -364,11 +370,23 @@ class RecursiveCaptionDataset(Dataset):
                     cur_data["lang_feature"] = lang_feat.astype(np.float32)
                     cur_data["lang_mask"] = cur_data["input_mask"].copy()
                 else:
-                    D_lang = lang_feat_all.shape[-1] if lang_feat_all is not None else 1
-                    cur_data["lang_feature"] = np.zeros(
-                        (self.max_v_len + self.max_t_len, D_lang), dtype=np.float32
-                    )
-                    cur_data["lang_mask"] = np.zeros_like(cur_data["input_mask"])
+                    # Determine the correct language feature dimension:
+                    #   1. Prefer the actual file's last dim (handles clip_idx
+                    #      out-of-range when lang_feat_all is not None).
+                    #   2. Fall back to self.lang_feature_size from opt.
+                    #   3. If 0 (lang disabled), do NOT insert any lang key so
+                    #      the model and collate always see None consistently.
+                    if lang_feat_all is not None:
+                        D_lang = lang_feat_all.shape[-1]
+                    else:
+                        D_lang = self.lang_feature_size
+
+                    if D_lang > 0:
+                        cur_data["lang_feature"] = np.zeros(
+                            (self.max_v_len + self.max_t_len, D_lang), dtype=np.float32
+                        )
+                        cur_data["lang_mask"] = np.zeros_like(cur_data["input_mask"])
+                    # D_lang == 0: lang disabled; omit keys so e.get() returns None.
 
                 single_video_features.append(cur_data)
                 single_video_meta.append(cur_meta)
