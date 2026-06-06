@@ -63,7 +63,7 @@ class RecursiveCaptionDataset(Dataset):
     def __init__(self, dset_name, data_dir, video_feature_dir, flow_feature_dir, duration_file, word2idx_path,
                  max_t_len, max_v_len, max_n_sen, mode="train", recurrent=True, untied=False,
                  lang_feature_dir=None, sent_feature_dir=None, feature_type="c3d",
-                 lang_feature_size=0):
+                 lang_feature_size=0, vocab_clip_path=None):
         self.dset_name = dset_name
         self.word2idx = load_json(word2idx_path)
         self.idx2word = {int(v): k for k, v in self.word2idx.items()}
@@ -88,6 +88,45 @@ class RecursiveCaptionDataset(Dataset):
         # inserted into cur_data, so the collate function and the model both
         # see None consistently.
         self.lang_feature_size = lang_feature_size
+
+        # vocab_clip: maps token string -> CLIP embedding (D_clip,).
+        # Expected format: dict[str, list[float]] or torch.Tensor of shape
+        # (vocab_size, D_clip) together with an index mapping.
+        # VLTinT stores it as a dict {word: embedding_list} serialised with
+        # torch.save, so we load with torch and build a lookup dict.
+        self.vocab_clip = None  # dict[str -> np.ndarray(D,)]
+        if vocab_clip_path is not None and os.path.exists(vocab_clip_path):
+            import torch as _torch
+            _vc = _torch.load(vocab_clip_path, map_location="cpu", weights_only=False)
+            # Support two common serialisation formats used by VLTinT:
+            #   a) dict[str, Tensor/list]  — direct word-to-embedding mapping
+            #   b) tuple/list (word2idx, embedding_matrix)  — index-based
+            if isinstance(_vc, dict):
+                self.vocab_clip = {
+                    w: np.asarray(e, dtype=np.float32)
+                    for w, e in _vc.items()
+                }
+            elif isinstance(_vc, (list, tuple)) and len(_vc) == 2:
+                _w2i, _emb = _vc
+                _emb = np.asarray(_emb, dtype=np.float32)
+                self.vocab_clip = {
+                    w: _emb[i] for w, i in _w2i.items()
+                }
+            else:
+                logger.warning(
+                    "vocab_clip_path loaded but format not recognised; "
+                    "lang features will be disabled. Expected dict or "
+                    "(word2idx, embedding_matrix) tuple, got %s",
+                    type(_vc).__name__
+                )
+            if self.vocab_clip is not None:
+                # Infer D_clip from the first entry and update lang_feature_size
+                _sample = next(iter(self.vocab_clip.values()))
+                self.lang_feature_size = int(_sample.shape[0])
+                logger.info(
+                    "Loaded vocab_clip with %d words, D_clip=%d",
+                    len(self.vocab_clip), self.lang_feature_size
+                )
 
         self.mode = mode
         self.recurrent = recurrent
@@ -119,21 +158,41 @@ class RecursiveCaptionDataset(Dataset):
         return np.asarray(feat, dtype=np.float32)
 
     def _load_lang_feature(self, name):
-        """Load CLIP language features for all segments of a video.
+        """Load and convert CLIP linguistic features for a full video.
 
-        Expected file: <lang_feature_dir>/<video_name>.json
-        Shape: (num_segments, max_v_len, clip_lang_dim)
-        Returns None if the directory is not set or the file is missing.
+        The on-disk file (<lang_feature_dir>/<video_name>.json) follows the
+        VLTinT format: a list of N_clips lists of K token strings each, where
+        N_clips == total number of C3D clips in the video (typically 100) and
+        K is the number of top-similar CLIP vocabulary words per clip.
+
+        Each token string is looked up in self.vocab_clip (loaded from
+        vocab_clip_path) to obtain a D_clip-dimensional embedding.  The K
+        embeddings for one clip are averaged to produce a single (D_clip,)
+        vector, yielding a final array of shape (N_clips, D_clip) that can
+        be sliced by segment exactly like the visual C3D feature.
+
+        Returns:
+            np.ndarray of shape (N_clips, D_clip) float32, or None if the
+            directory / file / vocab is not available.
         """
-        if self.lang_feature_dir is None:
+        if self.lang_feature_dir is None or self.vocab_clip is None:
             return None
         path = os.path.join(self.lang_feature_dir, name + ".json")
         if not os.path.exists(path):
             return None
-        feat = load_json(path)
-        if feat is None:
+        tokens_per_clip = load_json(path)   # list[list[str]], shape (N_clips, K)
+        if tokens_per_clip is None:
             return None
-        return np.asarray(feat, dtype=np.float32)
+
+        D = self.lang_feature_size
+        unk = np.zeros(D, dtype=np.float32)  # fallback for OOV tokens
+        feats = []
+        for tokens in tokens_per_clip:       # one list of strings per clip
+            embs = np.stack(
+                [self.vocab_clip.get(t, unk) for t in tokens]
+            )                                # (K, D)
+            feats.append(embs.mean(axis=0))  # (D,)
+        return np.stack(feats, axis=0).astype(np.float32)  # (N_clips, D)
 
     def _load_duration(self):
         """Load video durations in seconds.
@@ -368,22 +427,39 @@ class RecursiveCaptionDataset(Dataset):
                 if sent_feat is not None:
                     cur_data["sent_feat"] = sent_feat.astype(np.float32)
 
-                if lang_feat_all is not None and clip_idx < len(lang_feat_all):
-                    lang_feat = lang_feat_all[clip_idx]          # (max_v_len, D_lang)
-                    cur_data["lang_feature"] = lang_feat.astype(np.float32)
+                # ── Lang feature: slice full-video array by segment ──────────
+                # lang_feat_all shape: (N_clips, D_clip) — indexed like C3D.
+                # We reuse the same [st, ed] clip indices computed inside
+                # _load_indexed_video_feature to extract the right window, then
+                # apply the same padding / downsampling logic so the output is
+                # always (max_v_len + max_t_len, D_clip) aligned with video_feature.
+                if lang_feat_all is not None:
+                    D_lang = lang_feat_all.shape[-1]
+                    duration = self.duration[
+                        example["name"][2:] if self.dset_name == "anet"
+                        else example["name"]
+                    ]
+                    feat_len = len(lang_feat_all)
+                    st, ed = self._convert_to_feat_index_st_ed(
+                        feat_len, example["timestamps"][clip_idx], duration
+                    )
+                    max_v_l = self.max_v_len - 2   # slots for [VID] tokens
+                    indexed_len = ed - st + 1
+
+                    lang_buf = np.zeros(
+                        (self.max_v_len + self.max_t_len, D_lang), dtype=np.float32
+                    )
+                    if indexed_len > max_v_l:
+                        # Downsample to max_v_l clips
+                        ds_idx = np.linspace(st, ed, max_v_l, endpoint=True).astype(int)
+                        lang_buf[1:max_v_l + 1] = lang_feat_all[ds_idx]
+                    else:
+                        lang_buf[1:indexed_len + 1] = lang_feat_all[st:ed + 1]
+
+                    cur_data["lang_feature"] = lang_buf
                     cur_data["lang_mask"] = cur_data["input_mask"].copy()
                 else:
-                    # Determine the correct language feature dimension:
-                    #   1. Prefer the actual file's last dim (handles clip_idx
-                    #      out-of-range when lang_feat_all is not None).
-                    #   2. Fall back to self.lang_feature_size from opt.
-                    #   3. If 0 (lang disabled), do NOT insert any lang key so
-                    #      the model and collate always see None consistently.
-                    if lang_feat_all is not None:
-                        D_lang = lang_feat_all.shape[-1]
-                    else:
-                        D_lang = self.lang_feature_size
-
+                    D_lang = self.lang_feature_size
                     if D_lang > 0:
                         cur_data["lang_feature"] = np.zeros(
                             (self.max_v_len + self.max_t_len, D_lang), dtype=np.float32
