@@ -7,7 +7,7 @@ v_feat_dir="./video_feature/cd_anet_feat"
 dur_file="./video_feature/anet_duration_frame.csv"
 word2idx_path="./cache/${dset_name}_word2idx.json"
 glove_path="./cache/${dset_name}_vocab_glove.pt"
-#lang_feat_dir="./video_feature/lang_feature"
+lang_feat_dir="./video_feature/lang_feature"
 sent_feat_dir="./video_feature/sent_feature"
 #flow_feat_dir="./video_feature/rt_anet_feat/trainval"
 
