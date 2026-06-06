@@ -41,7 +41,7 @@ time python src/train.py \
     --max_n_sen ${max_n_sen} \
     --max_t_len ${max_t_len} \
     --max_v_len ${max_v_len} \
-    --video_feature_size 3072  \
+    --video_feature_size 2048  \
     --lang_feature_size 512 \
     --n_epoch 50 \
     --use_beam \
@@ -54,10 +54,10 @@ time python src/train.py \
     --sent_loss_weight 0.15 \
     --batch_size 96 \
     --val_batch_size 64 \
-    --max_es_cnt 15 \
+    --max_es_cnt 10 \
     --num_workers 8 \
     --n_memory_cells 1 \
-    --num_hidden_layers 4 \
+    --num_hidden_layers 2 \
     --intermediate_size 768 \
     --hidden_size 768 \
     --num_attention_heads 12 \
