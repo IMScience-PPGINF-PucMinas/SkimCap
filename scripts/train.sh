@@ -26,8 +26,6 @@ else
     echo "Wrong dataset name: select between anet and yc2"
     exit 1
 fi
-#     --lang_feature_dir ${lang_feat_dir} \
-#     --lang_feature_size 512 \
 
 time python src/train.py \
     --dset_name ${dset_name} \
@@ -38,6 +36,8 @@ time python src/train.py \
     --glove_path ${glove_path} \
     --feature_type c3d \
     --sent_feature_dir ${sent_feat_dir} \
+    --lang_feature_dir ${lang_feat_dir} \
+    --lang_feature_size 512 \
     --max_n_sen ${max_n_sen} \
     --max_t_len ${max_t_len} \
     --max_v_len ${max_v_len} \
