@@ -451,7 +451,7 @@ def get_args():
     parser.add_argument("--feature_type", type=str, default="c3d", choices=["c3d", "resnet"],
                         help="Type of visual features: 'c3d' (fixed 100 clips, 2048-d) or "
                              "'resnet' (variable n frames at 2 fps, resampled to max_v_len)")
-    parser.add_argument("--lang_feature_dir", default=None, help="dir containing the lang feature")
+    parser.add_argument("--lang_feature_dir", required=True, help="dir containing the lang feature")
     parser.add_argument("--sent_feature_dir", required=True, help="dir containing the sent feature")
     parser.add_argument("--v_duration_file", required=True, help="filepath to the duration file")
     parser.add_argument("--word2idx_path", type=str, default="cache/word2idx.json")
@@ -560,7 +560,8 @@ def main():
         recurrent=opt.recurrent, untied=opt.untied or opt.mtrans,
         lang_feature_dir=opt.lang_feature_dir,
         sent_feature_dir=opt.sent_feature_dir,
-        feature_type=opt.feature_type)
+        feature_type=opt.feature_type,
+        lang_feature_size=opt.lang_feature_size)
     val_dataset = RCDataset(
         dset_name=opt.dset_name,
         data_dir=opt.data_dir, video_feature_dir=opt.video_feature_dir,
@@ -570,7 +571,8 @@ def main():
         recurrent=opt.recurrent, untied=opt.untied or opt.mtrans,
         lang_feature_dir=opt.lang_feature_dir,
         sent_feature_dir=opt.sent_feature_dir,
-        feature_type=opt.feature_type)
+        feature_type=opt.feature_type,
+        lang_feature_size=opt.lang_feature_size)
 
     if opt.recurrent:
         collate_fn = caption_collate
