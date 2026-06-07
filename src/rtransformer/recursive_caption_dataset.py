@@ -478,15 +478,23 @@ class RecursiveCaptionDataset(Dataset):
                     lang_buf = np.zeros(
                         (self.max_v_len + self.max_t_len, D_lang), dtype=np.float32
                     )
+                    # lang_mask: 1 only at video positions that were actually filled.
+                    # Using input_mask here was wrong — that mask covers text positions
+                    # too, which caused lang embeddings to corrupt word/BOS/EOS slots.
+                    lang_mask = np.zeros(
+                        self.max_v_len + self.max_t_len, dtype=np.float32
+                    )
                     if indexed_len > max_v_l:
                         # Downsample to max_v_l clips
                         ds_idx = np.linspace(st, ed, max_v_l, endpoint=True).astype(int)
                         lang_buf[1:max_v_l + 1] = lang_feat_all[ds_idx]
+                        lang_mask[1:max_v_l + 1] = 1.0
                     else:
                         lang_buf[1:indexed_len + 1] = lang_feat_all[st:ed + 1]
+                        lang_mask[1:indexed_len + 1] = 1.0
 
                     cur_data["lang_feature"] = lang_buf
-                    cur_data["lang_mask"] = cur_data["input_mask"].copy()
+                    cur_data["lang_mask"] = lang_mask
                 else:
                     # lang_feat_all is None: either lang_feature_dir was not set,
                     # or vocab_clip was not loaded.  Do NOT insert a zero tensor —
