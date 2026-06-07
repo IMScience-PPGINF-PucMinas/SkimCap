@@ -51,7 +51,7 @@ time python src/train.py \
     --label_smoothing 0.05 \
     --contrastive_temp 0.10 \
     --contrastive_weight 0.0 \
-    --sent_loss_weight 0.15 \
+    --sent_loss_weight 0.0 \
     --batch_size 96 \
     --val_batch_size 64 \
     --max_es_cnt 10 \
