@@ -89,56 +89,66 @@ class RecursiveCaptionDataset(Dataset):
         # see None consistently.
         self.lang_feature_size = lang_feature_size
 
-        # vocab_clip: maps token string -> word embedding (D,).
-        # Supports three serialisation formats:
-        #   a) dict[str, Tensor/list]  — direct {word: embedding} mapping
-        #      (VLTinT's anet_vocab_clip.pt format)
-        #   b) np.ndarray / Tensor of shape (vocab_size, D) together with
-        #      the dataset's word2idx dict — e.g. the vocab_glove.pt produced
-        #      by build_vocab.py, where word2idx is already loaded as
-        #      self.word2idx.
-        #   c) tuple/list (word2idx_dict, embedding_matrix) — index-based.
+        # vocab_clip: maps token string -> embedding (D,).
+        # The lang_feature JSON files contain CLIP visual-concept tokens
+        # (e.g. 'bongos', 'maracas') that come from the CLIP visual vocab —
+        # a very different vocabulary from the caption word2idx.  Therefore
+        # the only reliable lookup table is one built from the CLIP text
+        # encoder itself (anet_vocab_clip.pt from VLTinT), or a GloVe matrix
+        # indexed by a vocab that actually covers those tokens.
+        #
+        # Supported formats for vocab_clip_path:
+        #   (a) dict[str, list/Tensor] — VLTinT's anet_vocab_clip.pt
+        #   (b) tuple/list (word2idx_dict, embedding_matrix) — index-based
+        #   (c) np.ndarray/Tensor (vocab_size, D) — raw matrix; word2idx
+        #       must cover the lang tokens (caption word2idx usually does NOT)
         self.vocab_clip = None  # dict[str -> np.ndarray(D,)]
         if vocab_clip_path is not None and os.path.exists(vocab_clip_path):
             import torch as _torch
             _vc = _torch.load(vocab_clip_path, map_location="cpu", weights_only=False)
 
             if isinstance(_vc, dict):
-                # Format (a): {word: embedding}
+                # Format (a): {word: embedding}  ← VLTinT native format
                 self.vocab_clip = {
                     w: np.asarray(e, dtype=np.float32)
                     for w, e in _vc.items()
                 }
+            elif isinstance(_vc, (list, tuple)) and len(_vc) == 2:
+                # Format (b): (word2idx_dict, embedding_matrix)
+                _w2i, _emb = _vc
+                _emb = np.asarray(_emb, dtype=np.float32)
+                self.vocab_clip = {
+                    w: _emb[i] for w, i in _w2i.items() if i < len(_emb)
+                }
             elif isinstance(_vc, (np.ndarray, _torch.Tensor)):
-                # Format (b): raw embedding matrix — use self.word2idx as index.
-                # This matches the vocab_glove.pt output of build_vocab.py:
-                #   torch.save(glove_matrix, vocab_glove_path)
-                # where glove_matrix[i] is the embedding for idx2word[i].
+                # Format (c): raw matrix indexed by self.word2idx.
+                # WARNING: vocab_glove.pt uses caption word2idx which has very
+                # low coverage of CLIP visual tokens — most lookups will return
+                # the zero (OOV) vector and lang features will be near-zero.
+                # Use anet_vocab_clip.pt (VLTinT) for correct behaviour.
                 _emb = np.asarray(_vc, dtype=np.float32)
                 self.vocab_clip = {
                     w: _emb[i]
                     for w, i in self.word2idx.items()
                     if i < len(_emb)
                 }
-            elif isinstance(_vc, (list, tuple)) and len(_vc) == 2:
-                # Format (c): (word2idx_dict, embedding_matrix)
-                _w2i, _emb = _vc
-                _emb = np.asarray(_emb, dtype=np.float32)
-                self.vocab_clip = {
-                    w: _emb[i] for w, i in _w2i.items() if i < len(_emb)
-                }
+                logger.warning(
+                    "vocab_clip loaded as raw GloVe matrix (format c). "
+                    "Caption word2idx has LOW coverage of CLIP visual tokens — "
+                    "lang features will be near-zero. "
+                    "Recommended: use anet_vocab_clip.pt from VLTinT instead."
+                )
             else:
                 logger.warning(
-                    "vocab_clip_path loaded but format not recognised; "
-                    "lang features will be disabled. Got type: %s",
-                    type(_vc).__name__
+                    "vocab_clip_path format not recognised; lang features disabled. "
+                    "Got type: %s", type(_vc).__name__
                 )
 
             if self.vocab_clip is not None:
                 _sample = next(iter(self.vocab_clip.values()))
                 self.lang_feature_size = int(_sample.shape[0])
                 logger.info(
-                    "Loaded vocab_clip with %d words, D=%d (from %s)",
+                    "Loaded vocab_clip: %d entries, D=%d (from %s)",
                     len(self.vocab_clip), self.lang_feature_size,
                     os.path.basename(vocab_clip_path)
                 )
@@ -474,13 +484,13 @@ class RecursiveCaptionDataset(Dataset):
                     cur_data["lang_feature"] = lang_buf
                     cur_data["lang_mask"] = cur_data["input_mask"].copy()
                 else:
-                    D_lang = self.lang_feature_size
-                    if D_lang > 0:
-                        cur_data["lang_feature"] = np.zeros(
-                            (self.max_v_len + self.max_t_len, D_lang), dtype=np.float32
-                        )
-                        cur_data["lang_mask"] = np.zeros_like(cur_data["input_mask"])
-                    # D_lang == 0: lang disabled; omit keys so e.get() returns None.
+                    # lang_feat_all is None: either lang_feature_dir was not set,
+                    # or vocab_clip was not loaded.  Do NOT insert a zero tensor —
+                    # that would reach the model as a non-None tensor of zeros,
+                    # making the print/debug show 0.0 and hiding the disabled state.
+                    # Omit the key entirely; e.get() in train.py returns None,
+                    # and the model skips the lang_embeddings branch cleanly.
+                    pass  # lang disabled — no key inserted
 
                 single_video_features.append(cur_data)
                 single_video_meta.append(cur_meta)

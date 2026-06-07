@@ -689,18 +689,21 @@ class RecursiveTransformer(nn.Module):
             memory_list.append(list(prev_ms))
             prediction_scores_list.append(prediction_scores)
 
-        if self.use_contrastive:
-            bos_hidden = encoded_layers[-1][:, self.config.max_v_len, :]  # (N, D)
-            if sent_feats_list is not None:
-                target_sent = sent_feats_list[idx]
-                if target_sent is not None:
-                    pred_sent = F.normalize(self.sent_proj(bos_hidden), dim=-1)  # (N, D)
-                    target_sent = F.normalize(target_sent, dim=-1)               # (N, D)
-                    semantic_loss = (
-                        1 - F.cosine_similarity(pred_sent, target_sent, dim=-1)
-                    ).mean()
-                    semantic_losses.append(semantic_loss)
-            sentence_embs.append(self.contrastive_proj(bos_hidden))
+            # ── Contrastive + semantic loss (per step) ────────────────────
+            # Must be inside the loop so every step's BOS hidden state and
+            # its corresponding sent_feat are used — not just the last step.
+            if self.use_contrastive:
+                bos_hidden = encoded_layers[-1][:, self.config.max_v_len, :]  # (N, D)
+                if sent_feats_list is not None:
+                    target_sent = sent_feats_list[idx]
+                    if target_sent is not None:
+                        pred_sent = F.normalize(self.sent_proj(bos_hidden), dim=-1)
+                        target_sent = F.normalize(target_sent, dim=-1)
+                        semantic_loss = (
+                            1 - F.cosine_similarity(pred_sent, target_sent, dim=-1)
+                        ).mean()
+                        semantic_losses.append(semantic_loss)
+                sentence_embs.append(self.contrastive_proj(bos_hidden))
 
         if return_memory:
             return memory_list
