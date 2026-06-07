@@ -50,7 +50,7 @@ time python src/train.py \
     --lr_warmup_proportion 0.1 \
     --label_smoothing 0.05 \
     --contrastive_temp 0.10 \
-    --contrastive_weight 0.1 \
+    --contrastive_weight 0.0 \
     --sent_loss_weight 0.15 \
     --batch_size 96 \
     --val_batch_size 64 \
