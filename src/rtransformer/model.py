@@ -551,7 +551,11 @@ class RecursiveTransformer(nn.Module):
         else:
             self.loss_func = nn.CrossEntropyLoss(ignore_index=-1)
 
-        use_contrastive = getattr(config, "use_contrastive_loss", True)
+        # use_contrastive is disabled when contrastive_weight == 0 so that
+        # contrastive_proj is never called and no spurious gradients flow through
+        # the BOS token even when the loss weight is zero.
+        _contrastive_weight = getattr(config, "contrastive_weight", 0.1)
+        use_contrastive = getattr(config, "use_contrastive_loss", True) and _contrastive_weight > 0.0
         self.use_contrastive = use_contrastive
         if use_contrastive:
             contrastive_dim = getattr(config, "contrastive_dim", 128)
@@ -686,7 +690,7 @@ class RecursiveTransformer(nn.Module):
             # sentence's BOS embedding and its sent_feat are paired correctly.
             if self.use_contrastive:
                 bos_hidden = encoded_layers[-1][:, self.config.max_v_len, :]  # (N, D)
-                if sent_feats_list is not None:
+                if self.sent_loss_weight > 0.0 and sent_feats_list is not None:
                     target_sent = sent_feats_list[idx]
                     if target_sent is not None:
                         pred_sent = F.normalize(self.sent_proj(bos_hidden), dim=-1)
