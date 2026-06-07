@@ -477,13 +477,6 @@ class BertEmbeddingsWithVideo(nn.Module):
 
         embeddings = word_emb + vid_emb + type_emb
 
-        if lang_features is not None:
-            print(
-                "LANG",
-                lang_features.abs().mean().item(),
-                lang_features.std().item()
-            )
-
         if self.use_lang_feature and lang_features is not None:
             lang_emb = self.lang_embeddings(lang_features)   # (N, L, D)
             if lang_mask is not None:
