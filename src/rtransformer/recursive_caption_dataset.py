@@ -89,43 +89,58 @@ class RecursiveCaptionDataset(Dataset):
         # see None consistently.
         self.lang_feature_size = lang_feature_size
 
-        # vocab_clip: maps token string -> CLIP embedding (D_clip,).
-        # Expected format: dict[str, list[float]] or torch.Tensor of shape
-        # (vocab_size, D_clip) together with an index mapping.
-        # VLTinT stores it as a dict {word: embedding_list} serialised with
-        # torch.save, so we load with torch and build a lookup dict.
+        # vocab_clip: maps token string -> word embedding (D,).
+        # Supports three serialisation formats:
+        #   a) dict[str, Tensor/list]  — direct {word: embedding} mapping
+        #      (VLTinT's anet_vocab_clip.pt format)
+        #   b) np.ndarray / Tensor of shape (vocab_size, D) together with
+        #      the dataset's word2idx dict — e.g. the vocab_glove.pt produced
+        #      by build_vocab.py, where word2idx is already loaded as
+        #      self.word2idx.
+        #   c) tuple/list (word2idx_dict, embedding_matrix) — index-based.
         self.vocab_clip = None  # dict[str -> np.ndarray(D,)]
         if vocab_clip_path is not None and os.path.exists(vocab_clip_path):
             import torch as _torch
             _vc = _torch.load(vocab_clip_path, map_location="cpu", weights_only=False)
-            # Support two common serialisation formats used by VLTinT:
-            #   a) dict[str, Tensor/list]  — direct word-to-embedding mapping
-            #   b) tuple/list (word2idx, embedding_matrix)  — index-based
+
             if isinstance(_vc, dict):
+                # Format (a): {word: embedding}
                 self.vocab_clip = {
                     w: np.asarray(e, dtype=np.float32)
                     for w, e in _vc.items()
                 }
+            elif isinstance(_vc, (np.ndarray, _torch.Tensor)):
+                # Format (b): raw embedding matrix — use self.word2idx as index.
+                # This matches the vocab_glove.pt output of build_vocab.py:
+                #   torch.save(glove_matrix, vocab_glove_path)
+                # where glove_matrix[i] is the embedding for idx2word[i].
+                _emb = np.asarray(_vc, dtype=np.float32)
+                self.vocab_clip = {
+                    w: _emb[i]
+                    for w, i in self.word2idx.items()
+                    if i < len(_emb)
+                }
             elif isinstance(_vc, (list, tuple)) and len(_vc) == 2:
+                # Format (c): (word2idx_dict, embedding_matrix)
                 _w2i, _emb = _vc
                 _emb = np.asarray(_emb, dtype=np.float32)
                 self.vocab_clip = {
-                    w: _emb[i] for w, i in _w2i.items()
+                    w: _emb[i] for w, i in _w2i.items() if i < len(_emb)
                 }
             else:
                 logger.warning(
                     "vocab_clip_path loaded but format not recognised; "
-                    "lang features will be disabled. Expected dict or "
-                    "(word2idx, embedding_matrix) tuple, got %s",
+                    "lang features will be disabled. Got type: %s",
                     type(_vc).__name__
                 )
+
             if self.vocab_clip is not None:
-                # Infer D_clip from the first entry and update lang_feature_size
                 _sample = next(iter(self.vocab_clip.values()))
                 self.lang_feature_size = int(_sample.shape[0])
                 logger.info(
-                    "Loaded vocab_clip with %d words, D_clip=%d",
-                    len(self.vocab_clip), self.lang_feature_size
+                    "Loaded vocab_clip with %d words, D=%d (from %s)",
+                    len(self.vocab_clip), self.lang_feature_size,
+                    os.path.basename(vocab_clip_path)
                 )
 
         self.mode = mode
