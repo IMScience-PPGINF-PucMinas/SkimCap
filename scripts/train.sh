@@ -27,6 +27,14 @@ else
     exit 1
 fi
 
+#    --sent_feature_dir ${sent_feat_dir} \
+#    --lang_feature_dir ${lang_feat_dir} \
+#    --lang_feature_size 512 \
+#    --vocab_clip_path cache/anet_vocab_clip.pt \
+#    --contrastive_temp 0.10 \
+#    --contrastive_weight 0.0 \
+#    --sent_loss_weight 0.0 \
+
 time python src/train.py \
     --dset_name ${dset_name} \
     --data_dir ${data_dir} \
@@ -35,10 +43,6 @@ time python src/train.py \
     --word2idx_path ${word2idx_path} \
     --glove_path ${glove_path} \
     --feature_type c3d \
-    --sent_feature_dir ${sent_feat_dir} \
-    --lang_feature_dir ${lang_feat_dir} \
-    --lang_feature_size 512 \
-    --vocab_clip_path cache/anet_vocab_clip.pt \
     --max_n_sen ${max_n_sen} \
     --max_t_len ${max_t_len} \
     --max_v_len ${max_v_len} \
@@ -49,9 +53,6 @@ time python src/train.py \
     --lr 1.5e-4 \
     --lr_warmup_proportion 0.1 \
     --label_smoothing 0.05 \
-    --contrastive_temp 0.10 \
-    --contrastive_weight 0.0 \
-    --sent_loss_weight 0.0 \
     --batch_size 96 \
     --val_batch_size 64 \
     --max_es_cnt 10 \
@@ -63,5 +64,5 @@ time python src/train.py \
     --num_attention_heads 12 \
     --ema_decay 0.9996 \
     --recurrent \
-    --exp_id clip_b128_c3d_flow_lang_sent \
+    --exp_id c3d_baseline_ablation \
     "$@"
