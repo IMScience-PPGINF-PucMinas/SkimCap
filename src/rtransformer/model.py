@@ -689,9 +689,8 @@ class RecursiveTransformer(nn.Module):
             memory_list.append(list(prev_ms))
             prediction_scores_list.append(prediction_scores)
 
-            # ── Contrastive + semantic loss (per step) ────────────────────
-            # Must be inside the loop so every step's BOS hidden state and
-            # its corresponding sent_feat are used — not just the last step.
+            # Contrastive + semantic loss computed per step so every
+            # sentence's BOS embedding and its sent_feat are paired correctly.
             if self.use_contrastive:
                 bos_hidden = encoded_layers[-1][:, self.config.max_v_len, :]  # (N, D)
                 if sent_feats_list is not None:

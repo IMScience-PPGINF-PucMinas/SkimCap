@@ -166,21 +166,21 @@ class RecursiveCaptionDataset(Dataset):
         self.num_sens = None
 
     def _load_sent_feature(self, name):
+        """name is already video_name (without v_ prefix for anet).
+        Sent feature files are stored with the v_ prefix for anet,
+        so we probe both conventions before giving up.
+        """
         if self.sent_feature_dir is None:
             return None
 
-        path = os.path.join(
-            self.sent_feature_dir,
-            name + ".json"
-        )
-
-        if not os.path.exists(path):
-            return None
-
-        feat = load_json(path)
-        if feat is None:
-            return None
-        return np.asarray(feat, dtype=np.float32)
+        # Probe with and without v_ prefix to handle both naming conventions
+        for candidate in (name, "v_" + name):
+            path = os.path.join(self.sent_feature_dir, candidate + ".json")
+            if os.path.exists(path):
+                feat = load_json(path)
+                if feat is not None:
+                    return np.asarray(feat, dtype=np.float32)
+        return None
 
     def _load_lang_feature(self, name):
         """Load and convert CLIP linguistic features for a full video.
@@ -202,10 +202,14 @@ class RecursiveCaptionDataset(Dataset):
         """
         if self.lang_feature_dir is None or self.vocab_clip is None:
             return None
-        path = os.path.join(self.lang_feature_dir, name + ".json")
-        if not os.path.exists(path):
-            return None
-        tokens_per_clip = load_json(path)   # list[list[str]], shape (N_clips, K)
+
+        # Probe with and without v_ prefix to handle both naming conventions
+        tokens_per_clip = None
+        for candidate in (name, "v_" + name):
+            path = os.path.join(self.lang_feature_dir, candidate + ".json")
+            if os.path.exists(path):
+                tokens_per_clip = load_json(path)
+                break
         if tokens_per_clip is None:
             return None
 
