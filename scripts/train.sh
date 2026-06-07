@@ -37,7 +37,8 @@ time python src/train.py \
     --feature_type c3d \
     --sent_feature_dir ${sent_feat_dir} \
     --lang_feature_dir ${lang_feat_dir} \
-    --lang_feature_size 512 \
+    --lang_feature_size 300 \
+    --vocab_clip_path cache/anet_vocab_glove.pt \
     --max_n_sen ${max_n_sen} \
     --max_t_len ${max_t_len} \
     --max_v_len ${max_v_len} \
