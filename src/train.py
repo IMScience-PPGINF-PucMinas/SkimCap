@@ -349,6 +349,17 @@ def train(model, training_data, validation_data, device, opt):
         writer.add_scalar("Val/CIDEr", cider * 100, niter)
         writer.add_scalar("Val/Re4", r4 * 100, niter)
 
+        # Log lang gate value so we can track whether the model is learning
+        # to use the lang feature (gate grows) or ignoring it (gate stays ~0.05).
+        # lang_gate_logit lives in model.embeddings; with EMA the assigned weights
+        # are already in model.state_dict() at this point.
+        if hasattr(model, "embeddings") and hasattr(model.embeddings, "lang_gate_logit"):
+            import torch
+            gate_val = torch.sigmoid(model.embeddings.lang_gate_logit).item()
+            logger.info("[Val] lang_gate: {:.4f} (logit: {:.3f})".format(
+                gate_val, model.embeddings.lang_gate_logit.item()))
+            writer.add_scalar("Val/LangGate", gate_val, niter)
+
         if opt.save_mode == "all":
             model_name = opt.save_model + "_e{e}_b{b}_c{c}_r{r}.chkpt".format(
                 e=epoch_i, b=round(bleu4 * 100, 2),
