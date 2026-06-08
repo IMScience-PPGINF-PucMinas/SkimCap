@@ -46,11 +46,9 @@ def _prepare_recurrent_batch(batch, device, pin_memory):
     input_masks_list = [e["input_mask"] for e in batched_data]
     token_type_ids_list = [e["token_type_ids"] for e in batched_data]
     input_labels_list = [e["input_labels"] for e in batched_data]
-    lang_features_list = [e.get("lang_feature") for e in batched_data]
-    lang_masks_list    = [e.get("lang_mask")    for e in batched_data]
-    sent_feats_list    = [e.get("sent_feat")    for e in batched_data]  # None em val
+    sent_feats_list = [e.get("sent_feat") for e in batched_data]  # None em val
     return (input_ids_list, video_features_list, input_masks_list, token_type_ids_list,
-            input_labels_list, lang_features_list, lang_masks_list, sent_feats_list)
+            input_labels_list, sent_feats_list)
 
 def _prepare_untied_batch(batch, device, pin_memory):
     batched_data = prepare_batch_inputs(batch[0], device=device, non_blocking=pin_memory)
@@ -91,7 +89,7 @@ def _log_single_debug(batched_data):
 def _forward_pass(model, batch, device, opt):
     if opt.recurrent:
         (input_ids_list, video_features_list, input_masks_list, token_type_ids_list,
-         input_labels_list, lang_features_list, lang_masks_list, sent_feats_list) = \
+         input_labels_list, sent_feats_list) = \
             _prepare_recurrent_batch(batch, device, opt.pin_memory)
         if opt.debug:
             _log_recurrent_debug(
@@ -104,8 +102,6 @@ def _forward_pass(model, batch, device, opt):
             input_masks_list,
             token_type_ids_list,
             input_labels_list,
-            lang_feats_list=lang_features_list,
-            lang_masks_list=lang_masks_list,
             sent_feats_list=sent_feats_list,
         )
     elif opt.untied or opt.mtrans:

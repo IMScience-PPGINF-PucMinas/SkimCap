@@ -432,22 +432,9 @@ class BertEmbeddingsWithVideo(nn.Module):
         )
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
 
-        lang_feature_size = getattr(config, "lang_feature_size", 0)
-        self.use_lang_feature = lang_feature_size > 0
-        if self.use_lang_feature:
-            self.lang_embeddings = nn.Sequential(
-                BertLayerNorm(lang_feature_size, eps=config.layer_norm_eps),
-                nn.Dropout(config.hidden_dropout_prob),
-                nn.Linear(lang_feature_size, config.hidden_size),
-                nn.ReLU(inplace=True),
-                BertLayerNorm(config.hidden_size, eps=config.layer_norm_eps),
-            )
-            # Scalar gate initialised near zero so lang contribution starts
-            # negligible and grows only if it helps the caption loss.
-            # sigmoid(lang_gate_logit) ∈ (0,1) weights lang_emb before adding
-            # to embeddings, preventing the unconstrained additive fusion that
-            # degraded performance from ~28 to ~13 CIDEr-D.
-            self.lang_gate_logit = nn.Parameter(torch.tensor(-3.0))
+        # Lang features are now concatenated onto video_features in the dataset
+        # (early fusion) before being projected by video_embeddings.
+        # No separate lang_embeddings module is needed.
 
         if self.add_position_embeddings:
             self.position_embeddings = PositionEncoding(
@@ -474,23 +461,12 @@ class BertEmbeddingsWithVideo(nn.Module):
         input_ids: torch.Tensor,
         video_features: torch.Tensor,
         token_type_ids: torch.Tensor,
-        lang_features: Optional[torch.Tensor] = None,
-        lang_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         word_emb = self.word_fc(self.word_embeddings(input_ids))
         vid_emb = self.video_embeddings(video_features)
         type_emb = self.token_type_embeddings(token_type_ids)
 
         embeddings = word_emb + vid_emb + type_emb
-
-        if self.use_lang_feature and lang_features is not None:
-            lang_emb = self.lang_embeddings(lang_features)   # (N, L, D)
-            if lang_mask is not None:
-                lang_emb = lang_emb * lang_mask.unsqueeze(-1)
-            # Gate starts at sigmoid(-3) ≈ 0.047 so lang_emb contributes
-            # almost nothing at init and the model learns its own mixing ratio.
-            gate = torch.sigmoid(self.lang_gate_logit)
-            embeddings = embeddings + gate * lang_emb
 
         if self.add_position_embeddings:
             embeddings = self.position_embeddings(embeddings)
@@ -575,7 +551,7 @@ class RecursiveTransformer(nn.Module):
 
         self.apply(self._init_weights)
 
-        clip_sent_dim = getattr(config, "lang_feature_size", 512) or 512
+        clip_sent_dim = getattr(config, "sent_feature_size", 512) or 512
         self.sent_proj = nn.Linear(config.hidden_size, clip_sent_dim)
         self.sent_loss_weight = getattr(config, "sent_loss_weight", 0.05)
 
@@ -630,13 +606,9 @@ class RecursiveTransformer(nn.Module):
         input_masks: torch.Tensor,
         token_type_ids: torch.Tensor,
         coverages: Optional[list[Optional[torch.Tensor]]] = None,
-        lang_features: Optional[torch.Tensor] = None,
-        lang_mask: Optional[torch.Tensor] = None,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor], torch.Tensor, list[Optional[torch.Tensor]]]:
-        embeddings = self.embeddings(
-            input_ids, video_features, token_type_ids,
-            lang_features=lang_features, lang_mask=lang_mask,
-        )
+        # Lang features are already baked into video_features (early concat in dataset).
+        embeddings = self.embeddings(input_ids, video_features, token_type_ids)
         prev_ms, encoded_layer_outputs, new_coverages = self.encoder(
             prev_ms, embeddings, input_masks,
             output_all_encoded_layers=False,
@@ -653,8 +625,6 @@ class RecursiveTransformer(nn.Module):
         token_type_ids_list: list[torch.Tensor],
         input_labels_list: Optional[list[torch.Tensor]],
         return_memory: bool = False,
-        lang_feats_list=None,
-        lang_masks_list=None,
         sent_feats_list=None,
     ):
         """
@@ -677,8 +647,6 @@ class RecursiveTransformer(nn.Module):
         semantic_losses: list[torch.Tensor] = []
 
         for idx in range(step_size):
-            lang_feat = lang_feats_list[idx] if lang_feats_list is not None else None
-            lang_mask = lang_masks_list[idx] if lang_masks_list is not None else None
             prev_ms, encoded_layers, prediction_scores, coverages = self.forward_step(
                 prev_ms,
                 input_ids_list[idx],
@@ -686,8 +654,6 @@ class RecursiveTransformer(nn.Module):
                 input_masks_list[idx],
                 token_type_ids_list[idx],
                 coverages=coverages,
-                lang_features=lang_feat,
-                lang_mask=lang_mask,
             )
             memory_list.append(list(prev_ms))
             prediction_scores_list.append(prediction_scores)
@@ -853,20 +819,17 @@ class Translator:
         video_features_list: list[torch.Tensor],
         input_masks_list: list[torch.Tensor],
         token_type_ids_list: list[torch.Tensor],
-        lang_feats_list: Optional[list[Optional[torch.Tensor]]] = None,
-        lang_masks_list: Optional[list[Optional[torch.Tensor]]] = None,
     ) -> list[list[str]]:
         """Decode a full paragraph (multiple recurrent steps) for a batch.
 
+        Lang features are already concatenated into video_features_list by the
+        dataset (early fusion), so no separate lang arguments are needed here.
+
         Args:
             input_ids_list:       [(N, L)] * step_size
-            video_features_list:  [(N, L, D_v)] * step_size
+            video_features_list:  [(N, L, D_v+D_lang)] * step_size
             input_masks_list:     [(N, L)] * step_size
             token_type_ids_list:  [(N, L)] * step_size
-            lang_feats_list:      [(N, L, D_lang)] * step_size or None — CLIP language
-                                  features; must match training-time inputs to avoid
-                                  train/inference discrepancy.
-            lang_masks_list:      [(N, L)] * step_size or None
 
         Returns:
             List[bsz] of List[step_size] of decoded token-id sequences.
@@ -882,20 +845,6 @@ class Translator:
 
         with torch.no_grad():
             for step_idx in range(step_size):
-                # Resolve CLIP features for this recurrent step (None-safe).
-                lang_feat = (
-                    lang_feats_list[step_idx]
-                    if lang_feats_list is not None
-                    else None
-                )
-                lang_mask = (
-                    lang_masks_list[step_idx]
-                    if lang_masks_list is not None
-                    else None
-                )
-
-                # Single forward_step call: returns prev_ms, encoded_layers,
-                # prediction_scores and updated coverages — no redundant passes.
                 prev_ms, encoded_layers, prediction_scores, coverages = self.model.forward_step(
                     prev_ms,
                     input_ids_list[step_idx],
@@ -903,8 +852,6 @@ class Translator:
                     input_masks_list[step_idx],
                     token_type_ids_list[step_idx],
                     coverages=coverages,
-                    lang_features=lang_feat,
-                    lang_mask=lang_mask,
                 )
 
                 text_logits = prediction_scores[:, self.config.max_v_len:, :]  # (N, max_t_len, V)

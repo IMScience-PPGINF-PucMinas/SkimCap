@@ -452,13 +452,41 @@ class RecursiveCaptionDataset(Dataset):
 
         video_feature = self._load_video_feature(video_name)
 
+        # ── Early concatenation of lang features ────────────────────────────
+        # Instead of fusing lang features inside the model (additive, gated),
+        # we concatenate them directly onto the visual features here so that
+        # the single video_embeddings Linear learns a unified projection from
+        # the joint (C3D ‖ lang) space.  This is how VLTinT handles multi-modal
+        # inputs and avoids the gradient-attenuation problems of late fusion.
+        #
+        # video_feature: (N, D_vis)          e.g. (100, 2048)
+        # lang_feat_all: (N, D_lang)         e.g. (100,  512)  or None
+        # after concat:  (N, D_vis+D_lang)   e.g. (100, 2560)
+        #
+        # When lang is unavailable we pad with zeros so the tensor shape is
+        # always (N, D_vis+D_lang) — the model sees a consistent input size.
+        lang_feat_all = self._load_lang_feature(video_name)  # (N, D_lang) or None
+        if lang_feat_all is not None:
+            N_vis = video_feature.shape[0]
+            N_lang = lang_feat_all.shape[0]
+            D_lang = lang_feat_all.shape[1]
+            if N_lang != N_vis:
+                # Temporal lengths differ — resample lang to match visual
+                lang_feat_all = self._resample_features(lang_feat_all, N_vis)
+            video_feature = np.concatenate([video_feature, lang_feat_all], axis=1)
+        elif self.lang_feature_size > 0:
+            # lang_feature_dir set but file missing for this video — pad zeros
+            # so the model still receives the expected (D_vis + D_lang) width.
+            pad = np.zeros((video_feature.shape[0], self.lang_feature_size),
+                           dtype=np.float32)
+            video_feature = np.concatenate([video_feature, pad], axis=1)
+
         if self.recurrent:
             num_sen = len(example["sentences"])
             single_video_features = []
             single_video_meta = []
 
             sent_feat_all = self._load_sent_feature(video_name)
-            lang_feat_all = self._load_lang_feature(video_name)  # (num_seg, max_v_len, D_lang) or None
 
             for clip_idx in range(num_sen):
                 cur_data, cur_meta = self.clip_sentence_to_feature(
@@ -474,54 +502,6 @@ class RecursiveCaptionDataset(Dataset):
                     sent_feat = sent_feat_all[clip_idx]
                 if sent_feat is not None:
                     cur_data["sent_feat"] = sent_feat.astype(np.float32)
-
-                # ── Lang feature: slice full-video array by segment ──────────
-                # lang_feat_all shape: (N_clips, D_clip) — indexed like C3D.
-                # We reuse the same [st, ed] clip indices computed inside
-                # _load_indexed_video_feature to extract the right window, then
-                # apply the same padding / downsampling logic so the output is
-                # always (max_v_len + max_t_len, D_clip) aligned with video_feature.
-                if lang_feat_all is not None:
-                    D_lang = lang_feat_all.shape[-1]
-                    duration = self.duration[
-                        example["name"][2:] if self.dset_name == "anet"
-                        else example["name"]
-                    ]
-                    feat_len = len(lang_feat_all)
-                    st, ed = self._convert_to_feat_index_st_ed(
-                        feat_len, example["timestamps"][clip_idx], duration
-                    )
-                    max_v_l = self.max_v_len - 2   # slots for [VID] tokens
-                    indexed_len = ed - st + 1
-
-                    lang_buf = np.zeros(
-                        (self.max_v_len + self.max_t_len, D_lang), dtype=np.float32
-                    )
-                    # lang_mask: 1 only at video positions that were actually filled.
-                    # Using input_mask here was wrong — that mask covers text positions
-                    # too, which caused lang embeddings to corrupt word/BOS/EOS slots.
-                    lang_mask = np.zeros(
-                        self.max_v_len + self.max_t_len, dtype=np.float32
-                    )
-                    if indexed_len > max_v_l:
-                        # Downsample to max_v_l clips
-                        ds_idx = np.linspace(st, ed, max_v_l, endpoint=True).astype(int)
-                        lang_buf[1:max_v_l + 1] = lang_feat_all[ds_idx]
-                        lang_mask[1:max_v_l + 1] = 1.0
-                    else:
-                        lang_buf[1:indexed_len + 1] = lang_feat_all[st:ed + 1]
-                        lang_mask[1:indexed_len + 1] = 1.0
-
-                    cur_data["lang_feature"] = lang_buf
-                    cur_data["lang_mask"] = lang_mask
-                else:
-                    # lang_feat_all is None: either lang_feature_dir was not set,
-                    # or vocab_clip was not loaded.  Do NOT insert a zero tensor —
-                    # that would reach the model as a non-None tensor of zeros,
-                    # making the print/debug show 0.0 and hiding the disabled state.
-                    # Omit the key entirely; e.get() in train.py returns None,
-                    # and the model skips the lang_embeddings branch cleanly.
-                    pass  # lang disabled — no key inserted
 
                 single_video_features.append(cur_data)
                 single_video_meta.append(cur_meta)

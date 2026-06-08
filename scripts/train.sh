@@ -2,17 +2,15 @@
 
 dset_name="anet"
 data_dir="/home/lvcardoso/SkimCap/densevid_eval/${dset_name}_data"
-# v_feat_dir="./video_feature/rt_anet_feat/trainval"
 v_feat_dir="./video_feature/cd_anet_feat"
 dur_file="./video_feature/anet_duration_frame.csv"
 word2idx_path="./cache/${dset_name}_word2idx.json"
 glove_path="./cache/${dset_name}_vocab_glove.pt"
 lang_feat_dir="./video_feature/lang_feature"
 sent_feat_dir="./video_feature/sent_feature"
-#flow_feat_dir="./video_feature/rt_anet_feat/trainval"
 
 echo "---------------------------------------------------------"
-echo ">>>>>>>> Running training on ${dset_name} dataset (CLIP + batch 128)"
+echo ">>>>>>>> Running training on ${dset_name} dataset (C3D + CLIP lang early-concat)"
 
 if [[ ${dset_name} == "anet" ]]; then
     max_n_sen=6
@@ -27,14 +25,6 @@ else
     exit 1
 fi
 
-#    --sent_feature_dir ${sent_feat_dir} \
-#    --lang_feature_dir ${lang_feat_dir} \
-#    --lang_feature_size 512 \
-#    --vocab_clip_path cache/anet_vocab_clip.pt \
-#    --contrastive_temp 0.10 \
-#    --contrastive_weight 0.0 \
-#    --sent_loss_weight 0.0 \
-
 time python src/train.py \
     --dset_name ${dset_name} \
     --data_dir ${data_dir} \
@@ -43,13 +33,13 @@ time python src/train.py \
     --word2idx_path ${word2idx_path} \
     --glove_path ${glove_path} \
     --feature_type c3d \
-    --max_n_sen ${max_n_sen} \
-    --max_t_len ${max_t_len} \
-    --max_v_len ${max_v_len} \
-    --video_feature_size 2048  \
     --lang_feature_dir ${lang_feat_dir} \
     --lang_feature_size 512 \
     --vocab_clip_path cache/anet_vocab_clip.pt \
+    --max_n_sen ${max_n_sen} \
+    --max_t_len ${max_t_len} \
+    --max_v_len ${max_v_len} \
+    --video_feature_size 2560 \
     --contrastive_weight 0.0 \
     --sent_loss_weight 0.0 \
     --n_epoch 50 \
@@ -69,5 +59,5 @@ time python src/train.py \
     --num_attention_heads 12 \
     --ema_decay 0.9996 \
     --recurrent \
-    --exp_id c3d_lang_gated \
+    --exp_id c3d_lang_early_concat \
     "$@"
