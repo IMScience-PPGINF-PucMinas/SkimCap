@@ -42,7 +42,6 @@ time python src/train.py \
     --video_feature_size 2560 \
     --contrastive_weight 0.0 \
     --sent_loss_weight 0.05 \
-    --use_contrastive \
     --n_epoch 50 \
     --use_beam \
     --beam_size 2 \
