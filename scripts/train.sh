@@ -42,6 +42,7 @@ time python src/train.py \
     --video_feature_size 2560 \
     --contrastive_weight 0.0 \
     --sent_loss_weight 0.05 \
+    --use_contrastive \
     --n_epoch 50 \
     --use_beam \
     --beam_size 2 \
@@ -59,5 +60,5 @@ time python src/train.py \
     --num_attention_heads 12 \
     --ema_decay 0.9996 \
     --recurrent \
-    --exp_id c3d_lang_early_concat_sent_0_05 \
+    --exp_id c3d_lang_early_concat_contrastive \
     "$@"
