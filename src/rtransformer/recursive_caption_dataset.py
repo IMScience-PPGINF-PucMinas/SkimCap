@@ -215,12 +215,31 @@ class RecursiveCaptionDataset(Dataset):
 
         D = self.lang_feature_size
         unk = np.zeros(D, dtype=np.float32)  # fallback for OOV tokens
+
+        # Only use the top-K semantically ranked tokens per clip.
+        # Tokens are ordered by CLIP visual similarity (best first); beyond
+        # rank ~10 the list degrades to subword fragments ("s", "'re", "o")
+        # and low-relevance words that dilute the aggregate vector.
+        TOP_K = 10
+
         feats = []
         for tokens in tokens_per_clip:       # one list of strings per clip
+            top_tokens = tokens[:TOP_K]
             embs = np.stack(
-                [self.vocab_clip.get(t, unk) for t in tokens]
-            )                                # (K, D)
-            feats.append(embs.mean(axis=0))  # (D,)
+                [self.vocab_clip.get(t, unk) for t in top_tokens]
+            )                                # (TOP_K, D)
+
+            # Rank-weighted mean: weight ∝ 1/rank so the most visually
+            # relevant token contributes ~2x rank-2, ~3x rank-3, etc.
+            K = len(top_tokens)
+            rank_weights = 1.0 / np.arange(1, K + 1, dtype=np.float32)
+            rank_weights /= rank_weights.sum()                            # L1 norm
+            agg = (embs * rank_weights[:, None]).sum(axis=0)             # (D,)
+
+            # L2-normalise to keep the feature on the CLIP unit sphere
+            # regardless of how many tokens were available.
+            norm = np.linalg.norm(agg)
+            feats.append(agg / norm if norm > 1e-6 else agg)
         return np.stack(feats, axis=0).astype(np.float32)  # (N_clips, D)
 
     def _load_duration(self):
