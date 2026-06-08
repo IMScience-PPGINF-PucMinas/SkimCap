@@ -363,7 +363,6 @@ def train(model, training_data, validation_data, device, opt):
         # lang_gate_logit lives in model.embeddings; with EMA the assigned weights
         # are already in model.state_dict() at this point.
         if hasattr(model, "embeddings") and hasattr(model.embeddings, "lang_gate_logit"):
-            import torch
             gate_val = torch.sigmoid(model.embeddings.lang_gate_logit).item()
             logger.info("[Val] lang_gate: {:.4f} (logit: {:.3f})".format(
                 gate_val, model.embeddings.lang_gate_logit.item()))
