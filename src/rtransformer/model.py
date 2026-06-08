@@ -549,11 +549,14 @@ class RecursiveTransformer(nn.Module):
             self.contrastive_temp = getattr(config, "contrastive_temp", 0.07)
             self.contrastive_weight = getattr(config, "contrastive_weight", 0.1)
 
-        self.apply(self._init_weights)
-
+        # sent_proj must be declared BEFORE self.apply() so that _init_weights
+        # initialises it with the same normal(0, initializer_range) scheme as
+        # the rest of the model instead of PyTorch's default Kaiming uniform.
         clip_sent_dim = getattr(config, "sent_feature_size", 512) or 512
         self.sent_proj = nn.Linear(config.hidden_size, clip_sent_dim)
         self.sent_loss_weight = getattr(config, "sent_loss_weight", 0.05)
+
+        self.apply(self._init_weights)
 
     def _init_weights(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear):
@@ -633,9 +636,15 @@ class RecursiveTransformer(nn.Module):
         Coverage vectors are initialised to None and accumulated across recurrent
         steps so the model can track which visual regions it has already described.
 
-        When ``use_contrastive_loss`` is enabled, an NT-Xent contrastive loss is
-        computed across consecutive sentence embeddings (pooled [BOS] states) and
-        added to the captioning loss.
+        Two auxiliary losses are available and controlled independently:
+
+        - **Semantic alignment loss** (``sent_loss_weight > 0``): cosine distance
+          between the projected BOS hidden state and the CLIP sentence feature for
+          each step.  Active regardless of ``use_contrastive_loss``.
+
+        - **NT-Xent contrastive loss** (``use_contrastive_loss=True``): attracts
+          consecutive sentence embeddings within the paragraph.  Requires at least
+          2 recurrent steps to fire.
         """
         prev_ms: list[Optional[torch.Tensor]] = [None] * self.config.num_hidden_layers
         coverages: list[Optional[torch.Tensor]] = [None] * self.config.num_hidden_layers
@@ -658,19 +667,27 @@ class RecursiveTransformer(nn.Module):
             memory_list.append(list(prev_ms))
             prediction_scores_list.append(prediction_scores)
 
-            # Contrastive + semantic loss computed per step so every
-            # sentence's BOS embedding and its sent_feat are paired correctly.
+            # BOS hidden state — shared anchor for both semantic and contrastive losses.
+            # Extracted unconditionally so each loss block can use it independently.
+            bos_hidden = encoded_layers[-1][:, self.config.max_v_len, :]  # (N, D)
+
+            # Semantic alignment loss: pulls the model's sentence representation
+            # toward the CLIP sent_feat for this step.  Active whenever
+            # sent_loss_weight > 0 and sent_feats are provided, independently of
+            # whether the NT-Xent contrastive loss is also enabled.
+            if self.sent_loss_weight > 0.0 and sent_feats_list is not None:
+                target_sent = sent_feats_list[idx]
+                if target_sent is not None:
+                    pred_sent = F.normalize(self.sent_proj(bos_hidden), dim=-1)
+                    target_sent = F.normalize(target_sent.to(bos_hidden.device), dim=-1)
+                    semantic_loss = (
+                        1 - F.cosine_similarity(pred_sent, target_sent, dim=-1)
+                    ).mean()
+                    semantic_losses.append(semantic_loss)
+
+            # NT-Xent contrastive loss: attracts consecutive sentence embeddings
+            # within the paragraph.  Controlled separately by use_contrastive_loss.
             if self.use_contrastive:
-                bos_hidden = encoded_layers[-1][:, self.config.max_v_len, :]  # (N, D)
-                if self.sent_loss_weight > 0.0 and sent_feats_list is not None:
-                    target_sent = sent_feats_list[idx]
-                    if target_sent is not None:
-                        pred_sent = F.normalize(self.sent_proj(bos_hidden), dim=-1)
-                        target_sent = F.normalize(target_sent, dim=-1)
-                        semantic_loss = (
-                            1 - F.cosine_similarity(pred_sent, target_sent, dim=-1)
-                        ).mean()
-                        semantic_losses.append(semantic_loss)
                 sentence_embs.append(self.contrastive_proj(bos_hidden))
 
         if return_memory:

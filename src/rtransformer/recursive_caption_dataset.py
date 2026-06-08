@@ -812,6 +812,13 @@ def caption_collate(batch):
     padded_batch = []
     padding_clip_sen_data = copy.deepcopy(batch[0][0])
     padding_clip_sen_data["input_labels"][:] = RecursiveCaptionDataset.IGNORE
+    # If the first example carries a sent_feat, ensure the padding element also
+    # has the key — otherwise step_collate raises KeyError when a video in the
+    # batch has fewer sentences than max_n_sen.
+    if "sent_feat" in padding_clip_sen_data:
+        padding_clip_sen_data["sent_feat"] = np.zeros_like(
+            padding_clip_sen_data["sent_feat"]
+        )
     for ele in batch:
         cur_n_sen = len(ele)
         if cur_n_sen < max_n_sen:
