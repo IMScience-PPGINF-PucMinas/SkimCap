@@ -278,9 +278,22 @@ def train(model, training_data, validation_data, device, opt):
 
     param_optimizer = list(model.named_parameters())
     no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
+    # lang_gate_logit is a scalar gating parameter — applying weight_decay would
+    # actively fight the small gradient signal from the lang feature and keep the
+    # gate pinned near its init value. Exclude it from decay and give it a higher
+    # lr multiplier so it can move faster than the rest of the model.
+    gate_params = ["lang_gate_logit"]
     optimizer_grouped_parameters = [
-        {"params": [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], "weight_decay": 0.01},
-        {"params": [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], "weight_decay": 0.0}
+        {"params": [p for n, p in param_optimizer
+                    if not any(nd in n for nd in no_decay) and not any(g in n for g in gate_params)],
+         "weight_decay": 0.01},
+        {"params": [p for n, p in param_optimizer
+                    if any(nd in n for nd in no_decay) and not any(g in n for g in gate_params)],
+         "weight_decay": 0.0},
+        # 10x lr for the gate so it can move despite the tiny lang gradient.
+        # BertAdam uses per-group "lr" when present, falling back to global lr.
+        {"params": [p for n, p in param_optimizer if any(g in n for g in gate_params)],
+         "weight_decay": 0.0, "lr": opt.lr * 10},
     ]
 
     if opt.ema_decay != -1:
