@@ -47,6 +47,11 @@ time python src/train.py \
     --max_t_len ${max_t_len} \
     --max_v_len ${max_v_len} \
     --video_feature_size 2048  \
+    --lang_feature_dir ${lang_feat_dir} \
+    --lang_feature_size 512 \
+    --vocab_clip_path cache/anet_vocab_clip.pt \
+    --contrastive_weight 0.0 \
+    --sent_loss_weight 0.0 \
     --n_epoch 50 \
     --use_beam \
     --beam_size 2 \
@@ -64,5 +69,5 @@ time python src/train.py \
     --num_attention_heads 12 \
     --ema_decay 0.9996 \
     --recurrent \
-    --exp_id c3d_baseline_ablation \
+    --exp_id c3d_lang_gated \
     "$@"

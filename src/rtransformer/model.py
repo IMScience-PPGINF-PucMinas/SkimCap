@@ -442,6 +442,12 @@ class BertEmbeddingsWithVideo(nn.Module):
                 nn.ReLU(inplace=True),
                 BertLayerNorm(config.hidden_size, eps=config.layer_norm_eps),
             )
+            # Scalar gate initialised near zero so lang contribution starts
+            # negligible and grows only if it helps the caption loss.
+            # sigmoid(lang_gate_logit) ∈ (0,1) weights lang_emb before adding
+            # to embeddings, preventing the unconstrained additive fusion that
+            # degraded performance from ~28 to ~13 CIDEr-D.
+            self.lang_gate_logit = nn.Parameter(torch.tensor(-3.0))
 
         if self.add_position_embeddings:
             self.position_embeddings = PositionEncoding(
@@ -481,7 +487,10 @@ class BertEmbeddingsWithVideo(nn.Module):
             lang_emb = self.lang_embeddings(lang_features)   # (N, L, D)
             if lang_mask is not None:
                 lang_emb = lang_emb * lang_mask.unsqueeze(-1)
-            embeddings = embeddings + lang_emb
+            # Gate starts at sigmoid(-3) ≈ 0.047 so lang_emb contributes
+            # almost nothing at init and the model learns its own mixing ratio.
+            gate = torch.sigmoid(self.lang_gate_logit)
+            embeddings = embeddings + gate * lang_emb
 
         if self.add_position_embeddings:
             embeddings = self.position_embeddings(embeddings)
@@ -551,11 +560,7 @@ class RecursiveTransformer(nn.Module):
         else:
             self.loss_func = nn.CrossEntropyLoss(ignore_index=-1)
 
-        # use_contrastive is disabled when contrastive_weight == 0 so that
-        # contrastive_proj is never called and no spurious gradients flow through
-        # the BOS token even when the loss weight is zero.
-        _contrastive_weight = getattr(config, "contrastive_weight", 0.1)
-        use_contrastive = getattr(config, "use_contrastive_loss", True) and _contrastive_weight > 0.0
+        use_contrastive = getattr(config, "use_contrastive_loss", True)
         self.use_contrastive = use_contrastive
         if use_contrastive:
             contrastive_dim = getattr(config, "contrastive_dim", 128)
@@ -690,7 +695,7 @@ class RecursiveTransformer(nn.Module):
             # sentence's BOS embedding and its sent_feat are paired correctly.
             if self.use_contrastive:
                 bos_hidden = encoded_layers[-1][:, self.config.max_v_len, :]  # (N, D)
-                if self.sent_loss_weight > 0.0 and sent_feats_list is not None:
+                if sent_feats_list is not None:
                     target_sent = sent_feats_list[idx]
                     if target_sent is not None:
                         pred_sent = F.normalize(self.sent_proj(bos_hidden), dim=-1)
