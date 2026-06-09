@@ -484,7 +484,8 @@ class RecursiveCaptionDataset(Dataset):
             lang_norm = lang_feat_all / (
                 np.linalg.norm(lang_feat_all, axis=1, keepdims=True) + 1e-6
             )
-            video_feature = np.concatenate([vis_norm, lang_norm], axis=1)
+            #video_feature = np.concatenate([vis_norm, lang_norm], axis=1)
+            video_feature = vis_norm
         elif self.lang_feature_size > 0:
             # lang_feature_dir set but file missing for this video — pad zeros
             # so the model still receives the expected (D_vis + D_lang) width.
