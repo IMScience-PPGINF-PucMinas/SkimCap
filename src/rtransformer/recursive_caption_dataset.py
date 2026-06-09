@@ -469,14 +469,29 @@ class RecursiveCaptionDataset(Dataset):
         if lang_feat_all is not None:
             N_vis = video_feature.shape[0]
             N_lang = lang_feat_all.shape[0]
-            D_lang = lang_feat_all.shape[1]
             if N_lang != N_vis:
                 # Temporal lengths differ — resample lang to match visual
                 lang_feat_all = self._resample_features(lang_feat_all, N_vis)
-            video_feature = np.concatenate([video_feature, lang_feat_all], axis=1)
+
+            # Normalise each modality separately (per-clip L2) before concat so
+            # that both live on the unit sphere and BertLayerNorm inside the model
+            # sees balanced variance across all D_vis + D_lang dimensions.
+            # Without this, C3D variance dominates and the model learns to ignore
+            # the CLIP dims entirely.
+            vis_norm = video_feature / (
+                np.linalg.norm(video_feature, axis=1, keepdims=True) + 1e-6
+            )
+            lang_norm = lang_feat_all / (
+                np.linalg.norm(lang_feat_all, axis=1, keepdims=True) + 1e-6
+            )
+            video_feature = np.concatenate([vis_norm, lang_norm], axis=1)
         elif self.lang_feature_size > 0:
             # lang_feature_dir set but file missing for this video — pad zeros
             # so the model still receives the expected (D_vis + D_lang) width.
+            # Still L2-normalise the visual part for consistent scale.
+            video_feature = video_feature / (
+                np.linalg.norm(video_feature, axis=1, keepdims=True) + 1e-6
+            )
             pad = np.zeros((video_feature.shape[0], self.lang_feature_size),
                            dtype=np.float32)
             video_feature = np.concatenate([video_feature, pad], axis=1)
@@ -513,7 +528,7 @@ class RecursiveCaptionDataset(Dataset):
                     example["timestamp"],
                     example["sentence"],
                     video_feature,
-                    clip_idx,
+                    clip_idx=None,
                 )
             else:
                 cur_data, cur_meta = self.clip_sentence_to_feature(
@@ -521,7 +536,7 @@ class RecursiveCaptionDataset(Dataset):
                     example["timestamp"],
                     example["sentence"],
                     video_feature,
-                    clip_idx,
+                    clip_idx=None,
                 )
             return cur_data, cur_meta
 
@@ -545,7 +560,11 @@ class RecursiveCaptionDataset(Dataset):
             video_feature, timestamp, duration
         )
 
-        feat = self._inject_timestamp_encoding(feat, timestamp, video_tokens)
+        # vis_dim: the model's raw visual feature size before any lang concat.
+        # When lang features have been concatenated, PE is restricted to the
+        # visual dims so the CLIP unit-sphere embeddings are not distorted.
+        _vis_dim = feat.shape[1] - self.lang_feature_size if self.lang_feature_size > 0 else None
+        feat = self._inject_timestamp_encoding(feat, timestamp, video_tokens, vis_dim=_vis_dim)
 
         text_tokens, text_mask = self._tokenize_pad_sentence(sentence)
         input_tokens = video_tokens + text_tokens
@@ -592,7 +611,8 @@ class RecursiveCaptionDataset(Dataset):
         video_tokens_proxy = (
             [self.VID_TOKEN] * n_valid + [self.PAD_TOKEN] * (self.max_v_len - n_valid)
         )
-        feat = self._inject_timestamp_encoding(feat, timestamp, video_tokens_proxy)
+        _vis_dim = feat.shape[1] - self.lang_feature_size if self.lang_feature_size > 0 else None
+        feat = self._inject_timestamp_encoding(feat, timestamp, video_tokens_proxy, vis_dim=_vis_dim)
 
         text_tokens, text_mask = self._tokenize_pad_sentence(sentence)
         text_ids = [self.word2idx.get(t, self.word2idx[self.UNK_TOKEN]) for t in text_tokens]
@@ -705,6 +725,7 @@ class RecursiveCaptionDataset(Dataset):
         feat: np.ndarray,
         timestamp: list,
         video_tokens: list,
+        vis_dim: int = None,
     ) -> np.ndarray:
         """Add sinusoidal timestamp encodings to the video feature array.
 
@@ -719,19 +740,24 @@ class RecursiveCaptionDataset(Dataset):
             feat:         (max_v_len + max_t_len, D) or (max_v_len, D) array
             timestamp:    [start_sec, end_sec]  (kept for potential future use)
             video_tokens: list of token strings
+            vis_dim:      if set, apply PE only to feat[:, :vis_dim] and leave
+                          the remaining dims (e.g. CLIP lang) untouched.
+                          When None (default), PE spans the full feature dim.
 
         Returns:
             feat with timestamp PE added (copy)
         """
         feat = feat.copy()
-        dim = feat.shape[1]
+        # Apply PE only over the visual dimensions so that CLIP embeddings
+        # (which live on a unit sphere) are not distorted by the additive PE.
+        pe_dim = vis_dim if vis_dim is not None else feat.shape[1]
 
         vid_positions = [i for i, tok in enumerate(video_tokens) if tok == self.VID_TOKEN]
         n_vid = len(vid_positions)
         for rank, pos_idx in enumerate(vid_positions):
             norm_pos = rank / max(n_vid - 1, 1)
-            pe = self._sinusoidal_pe(norm_pos, dim)
-            feat[pos_idx] += pe
+            pe = self._sinusoidal_pe(norm_pos, pe_dim)
+            feat[pos_idx, :pe_dim] += pe
 
         return feat
 
@@ -784,7 +810,15 @@ def step_collate(padded_batch_step):
     c_batch = dict()
     for key in padded_batch_step[0]:
         value = padded_batch_step[0][key]
-        if isinstance(value, list):
+        if key == "sent_feat":
+            # sent_feat may be absent in some examples (missing file).
+            # Only collate when ALL examples in this step carry the key;
+            # otherwise omit it so the model receives None consistently
+            # instead of crashing on a partial batch.
+            if all(key in d for d in padded_batch_step):
+                c_batch[key] = default_collate([d[key] for d in padded_batch_step])
+            # else: key is intentionally omitted from c_batch
+        elif isinstance(value, list):
             c_batch[key] = [d[key] for d in padded_batch_step]
         else:
             c_batch[key] = default_collate([d[key] for d in padded_batch_step])
@@ -812,9 +846,10 @@ def caption_collate(batch):
     padded_batch = []
     padding_clip_sen_data = copy.deepcopy(batch[0][0])
     padding_clip_sen_data["input_labels"][:] = RecursiveCaptionDataset.IGNORE
-    # If the first example carries a sent_feat, ensure the padding element also
-    # has the key — otherwise step_collate raises KeyError when a video in the
-    # batch has fewer sentences than max_n_sen.
+    # Mirror sent_feat in the padding element only when the first example
+    # carries it.  step_collate will skip the key when not all examples have
+    # it, so the padding element just needs to be consistent within each step —
+    # not necessarily across the whole batch.
     if "sent_feat" in padding_clip_sen_data:
         padding_clip_sen_data["sent_feat"] = np.zeros_like(
             padding_clip_sen_data["sent_feat"]
