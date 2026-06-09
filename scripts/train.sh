@@ -38,7 +38,7 @@ time python src/train.py \
     --max_n_sen ${max_n_sen} \
     --max_t_len ${max_t_len} \
     --max_v_len ${max_v_len} \
-    --video_feature_size 2560 \
+    --video_feature_size 2048 \
     --contrastive_weight 0.0 \
     --sent_loss_weight 0.25 \
     --n_epoch 50 \
