@@ -33,7 +33,6 @@ time python src/train.py \
     --word2idx_path ${word2idx_path} \
     --glove_path ${glove_path} \
     --feature_type c3d \
-    --lang_feature_dir ${lang_feat_dir} \
     --lang_feature_size 0 \
     --vocab_clip_path cache/anet_vocab_clip.pt \
     --max_n_sen ${max_n_sen} \
