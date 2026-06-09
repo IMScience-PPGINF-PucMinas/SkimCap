@@ -272,28 +272,56 @@ def _write_epoch_logs(log_train_file, log_valid_file, epoch_i,
 def train(model, training_data, validation_data, device, opt):
     model = model.to(device)
 
-    param_optimizer = list(model.named_parameters())
-    no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
-    # lang_gate_logit is a scalar gating parameter — applying weight_decay would
-    # actively fight the small gradient signal from the lang feature and keep the
-    # gate pinned near its init value. Exclude it from decay and give it a higher
-    # lr multiplier so it can move faster than the rest of the model.
-    gate_params = ["lang_gate_logit"]
-    optimizer_grouped_parameters = [
-        {"params": [p for n, p in param_optimizer
-                    if not any(nd in n for nd in no_decay) and not any(g in n for g in gate_params)],
-         "weight_decay": 0.01},
-        {"params": [p for n, p in param_optimizer
-                    if any(nd in n for nd in no_decay) and not any(g in n for g in gate_params)],
-         "weight_decay": 0.0},
-        # 10x lr for the gate so it can move despite the tiny lang gradient.
-        # BertAdam uses per-group "lr" when present, falling back to global lr.
-        {"params": [p for n, p in param_optimizer if any(g in n for g in gate_params)],
-         "weight_decay": 0.0, "lr": opt.lr * 10},
+    param_optimizer = [
+        (n, p) for n, p in model.named_parameters() if p.requires_grad
     ]
+
+    no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
+    gate_params = ["lang_gate_logit"]
+
+    optimizer_grouped_parameters = [
+        {
+            "params": [
+                p for n, p in param_optimizer
+                if not any(nd in n for nd in no_decay)
+                and not any(g in n for g in gate_params)
+            ],
+            "weight_decay": 0.01,
+        },
+        {
+            "params": [
+                p for n, p in param_optimizer
+                if any(nd in n for nd in no_decay)
+                and not any(g in n for g in gate_params)
+            ],
+            "weight_decay": 0.0,
+        },
+        {
+            "params": [
+                p for n, p in param_optimizer
+                if any(g in n for g in gate_params)
+            ],
+            "weight_decay": 0.0,
+            "lr": opt.lr * 10,
+        },
+    ]
+
+    # Sanity check: ensure gate parameter was actually found
+    assert len(optimizer_grouped_parameters[2]["params"]) > 0, (
+        "No parameters matched gate_params. "
+        "Check the parameter name (e.g. lang_gate_logit)."
+    )
+
+    logger.info(
+        "Optimizer groups: regular=%d, no_decay=%d, gate=%d",
+        len(optimizer_grouped_parameters[0]["params"]),
+        len(optimizer_grouped_parameters[1]["params"]),
+        len(optimizer_grouped_parameters[2]["params"]),
+    )
 
     if opt.ema_decay != -1:
         ema = EMA(opt.ema_decay)
+
         for name, p in model.named_parameters():
             if p.requires_grad:
                 ema.register(name, p.data)
@@ -301,104 +329,231 @@ def train(model, training_data, validation_data, device, opt):
         ema = None
 
     num_train_optimization_steps = len(training_data) * opt.n_epoch
-    optimizer = BertAdam(optimizer_grouped_parameters,
-                         lr=opt.lr,
-                         warmup=opt.lr_warmup_proportion,
-                         t_total=num_train_optimization_steps,
-                         schedule="warmup_linear")
+
+    optimizer = BertAdam(
+        optimizer_grouped_parameters,
+        lr=opt.lr,
+        warmup=opt.lr_warmup_proportion,
+        t_total=num_train_optimization_steps,
+        schedule="warmup_linear",
+    )
 
     writer = SummaryWriter(opt.res_dir)
+
     log_train_file, log_valid_file = _setup_log_files(opt)
 
-    prev_best_score = 0.
+    # Save configuration only once
+    cfg_name = opt.save_model + ".cfg.json"
+    save_parsed_args_to_json(opt, cfg_name)
+
+    prev_best_score = float("-inf")
     es_cnt = 0
 
-    for epoch_i in range(opt.n_epoch):
-        logger.info("[Epoch {}]".format(epoch_i))
+    try:
 
-        # schedule sampling prob update, TODO not implemented yet
+        assert len(training_data) > 0
+        assert len(validation_data) > 0
 
-        start = time.time()
-        if ema is not None and epoch_i != 0:  # use normal parameters for training, not EMA model
-            ema.resume(model)
-        train_loss, train_acc = train_epoch(
-            model, training_data, optimizer, ema, device, opt, writer, epoch_i)
-        logger.info("[Training]  ppl: {ppl: 8.5f}, accuracy: {acc:3.3f} %, elapse {elapse:3.3f} min"
-                    .format(ppl=math.exp(min(train_loss, 100)), acc=100*train_acc, elapse=(time.time()-start)/60.))
-        niter = (epoch_i + 1) * len(training_data)  # number of bart
-        writer.add_scalar("Train/Acc", train_acc, niter)
-        writer.add_scalar("Train/Loss", train_loss, niter)
+        for epoch_i in range(opt.n_epoch):
 
-        start = time.time()
+            logger.info("[Epoch %d]", epoch_i)
 
-        if ema is not None:
-            ema.assign(model)  # EMA model
-        val_loss, val_acc = eval_epoch(model, validation_data, device, opt)
-        logger.info("[Val]  ppl: {ppl: 8.5f}, accuracy: {acc:3.3f} %, elapse {elapse:3.3f} min"
-                    .format(ppl=math.exp(min(val_loss, 100)), acc=100*val_acc, elapse=(time.time()-start)/60.))
-        writer.add_scalar("Val/Acc", val_acc, niter)
-        writer.add_scalar("Val/Loss", val_loss, niter)
+            if ema is not None:
+                ema.resume(model)
 
-        checkpoint = {
-            "model": model.state_dict(),  # EMA model
-            "model_cfg": model.config,
-            "opt": opt,
-            "epoch": epoch_i}
+            start = time.time()
 
-        val_greedy_output, filepaths = eval_language_metrics(
-            checkpoint, validation_data, opt, eval_mode="val", model=model)
-        cider = val_greedy_output["CIDEr"]
-        bleu4 = val_greedy_output["Bleu_4"]
-        meteor = val_greedy_output["METEOR"]
-        r4 = val_greedy_output["re4"]
-        logger.info("[Val] METEOR {m:.2f} Bleu@4 {b:.2f} CIDEr {c:.2f} re4 {r:.2f}"
-                    .format(m=meteor * 100, b=bleu4 * 100, c=cider * 100, r=r4 * 100))
-        writer.add_scalar("Val/METEOR", meteor * 100, niter)
-        writer.add_scalar("Val/Bleu_4", bleu4 * 100, niter)
-        writer.add_scalar("Val/CIDEr", cider * 100, niter)
-        writer.add_scalar("Val/Re4", r4 * 100, niter)
+            train_loss, train_acc = train_epoch(
+                model=model,
+                training_data=training_data,
+                optimizer=optimizer,
+                ema=ema,
+                device=device,
+                opt=opt,
+                writer=writer,
+                epoch=epoch_i,
+            )
 
-        # Log lang gate value so we can track whether the model is learning
-        # to use the lang feature (gate grows) or ignoring it (gate stays ~0.05).
-        # lang_gate_logit lives in model.embeddings; with EMA the assigned weights
-        # are already in model.state_dict() at this point.
-        if hasattr(model, "embeddings") and hasattr(model.embeddings, "lang_gate_logit"):
-            gate_val = torch.sigmoid(model.embeddings.lang_gate_logit).item()
-            logger.info("[Val] lang_gate: {:.4f} (logit: {:.3f})".format(
-                gate_val, model.embeddings.lang_gate_logit.item()))
-            writer.add_scalar("Val/LangGate", gate_val, niter)
+            assert not math.isnan(train_loss)
+            assert not math.isinf(train_loss)
 
-        if opt.save_mode == "all":
-            model_name = opt.save_model + "_e{e}_b{b}_c{c}_r{r}.chkpt".format(
-                e=epoch_i, b=round(bleu4 * 100, 2),
-                c=round(cider * 100, 2), r=round(r4 * 100, 2))
-            torch.save(checkpoint, model_name)
-        elif opt.save_mode == "best":
-            model_name = opt.save_model + ".chkpt"
-            if cider > prev_best_score:
-                es_cnt = 0
-                prev_best_score = cider
-                torch.save(checkpoint, model_name)
-                new_filepaths = [e.replace("tmp", "best") for e in filepaths]
-                for src, tgt in zip(filepaths, new_filepaths):
-                    os.renames(src, tgt)
-                logger.info("The checkpoint file has been updated.")
-            else:
-                es_cnt += 1
-                if es_cnt > opt.max_es_cnt:  # early stop
-                    logger.info("Early stop at {} with CIDEr {}".format(epoch_i, prev_best_score))
-                    break
+            elapsed = (time.time() - start) / 60.0
 
-        cfg_name = opt.save_model + ".cfg.json"
-        save_parsed_args_to_json(opt, cfg_name)
+            logger.info(
+                "[Training] ppl: %.5f accuracy: %.3f %% elapsed %.3f min",
+                math.exp(min(train_loss, 100)),
+                100 * train_acc,
+                elapsed,
+            )
 
-        _write_epoch_logs(log_train_file, log_valid_file, epoch_i,
-                          train_loss, train_acc, val_loss, val_acc, val_greedy_output)
+            niter = (epoch_i + 1) * len(training_data)
 
-        if opt.debug:
-            break
+            writer.add_scalar("Train/Loss", train_loss, niter)
+            writer.add_scalar("Train/Acc", train_acc, niter)
+            writer.add_scalar(
+                "Train/LearningRate",
+                optimizer.param_groups[0]["lr"],
+                niter,
+            )
 
-    writer.close()
+            if ema is not None:
+                ema.assign(model)
+
+            try:
+
+                start = time.time()
+
+                val_loss, val_acc = eval_epoch(
+                    model,
+                    validation_data,
+                    device,
+                    opt,
+                )
+
+                elapsed = (time.time() - start) / 60.0
+
+                logger.info(
+                    "[Val] ppl: %.5f accuracy: %.3f %% elapsed %.3f min",
+                    math.exp(min(val_loss, 100)),
+                    100 * val_acc,
+                    elapsed,
+                )
+
+                writer.add_scalar("Val/Loss", val_loss, niter)
+                writer.add_scalar("Val/Acc", val_acc, niter)
+
+                checkpoint = {
+                    "model": model.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "model_cfg": model.config,
+                    "opt": opt,
+                    "epoch": epoch_i,
+                }
+
+                val_greedy_output, filepaths = eval_language_metrics(
+                    checkpoint,
+                    validation_data,
+                    opt,
+                    eval_mode="val",
+                    model=model,
+                )
+
+                cider = val_greedy_output["CIDEr"]
+                bleu4 = val_greedy_output["Bleu_4"]
+                meteor = val_greedy_output["METEOR"]
+                r4 = val_greedy_output["re4"]
+
+                logger.info(
+                    "[Val] METEOR %.2f BLEU@4 %.2f CIDEr %.2f re4 %.2f",
+                    meteor * 100,
+                    bleu4 * 100,
+                    cider * 100,
+                    r4 * 100,
+                )
+
+                writer.add_scalar("Val/METEOR", meteor * 100, niter)
+                writer.add_scalar("Val/Bleu_4", bleu4 * 100, niter)
+                writer.add_scalar("Val/CIDEr", cider * 100, niter)
+                writer.add_scalar("Val/Re4", r4 * 100, niter)
+
+                if (
+                    hasattr(model, "embeddings")
+                    and hasattr(model.embeddings, "lang_gate_logit")
+                ):
+                    gate_logit = model.embeddings.lang_gate_logit.item()
+                    gate_value = torch.sigmoid(
+                        model.embeddings.lang_gate_logit
+                    ).item()
+
+                    logger.info(
+                        "[Val] lang_gate: %.4f (logit %.4f)",
+                        gate_value,
+                        gate_logit,
+                    )
+
+                    writer.add_scalar(
+                        "Val/LangGate",
+                        gate_value,
+                        niter,
+                    )
+
+                    writer.add_scalar(
+                        "Val/LangGateLogit",
+                        gate_logit,
+                        niter,
+                    )
+
+                if opt.save_mode == "all":
+
+                    model_name = (
+                        opt.save_model
+                        + "_e{}_b{}_c{}_r{}.chkpt".format(
+                            epoch_i,
+                            round(bleu4 * 100, 2),
+                            round(cider * 100, 2),
+                            round(r4 * 100, 2),
+                        )
+                    )
+
+                    torch.save(checkpoint, model_name)
+
+                elif opt.save_mode == "best":
+
+                    model_name = opt.save_model + ".chkpt"
+
+                    # Intentionally using CIDEr as the early-stop criterion.
+                    if cider > prev_best_score:
+
+                        es_cnt = 0
+                        prev_best_score = cider
+
+                        torch.save(checkpoint, model_name)
+
+                        new_filepaths = [
+                            e.replace("tmp", "best")
+                            for e in filepaths
+                        ]
+
+                        for src, tgt in zip(filepaths, new_filepaths):
+                            os.rename(src, tgt)
+
+                        logger.info(
+                            "Checkpoint updated (best CIDEr)."
+                        )
+
+                    else:
+
+                        es_cnt += 1
+
+                        if es_cnt > opt.max_es_cnt:
+                            logger.info(
+                                "Early stop at epoch %d with CIDEr %.4f",
+                                epoch_i,
+                                prev_best_score,
+                            )
+                            break
+
+                _write_epoch_logs(
+                    log_train_file,
+                    log_valid_file,
+                    epoch_i,
+                    train_loss,
+                    train_acc,
+                    val_loss,
+                    val_acc,
+                    val_greedy_output,
+                )
+
+            finally:
+                # Always restore training weights
+                if ema is not None:
+                    ema.resume(model)
+
+            if opt.debug:
+                break
+
+    finally:
+        writer.close()
 
 def _resolve_model_type(opt):
     if opt.recurrent:
