@@ -8,6 +8,7 @@ word2idx_path="./cache/${dset_name}_word2idx.json"
 glove_path="./cache/${dset_name}_vocab_glove.pt"
 lang_feat_dir="./video_feature/lang_feature"
 sent_feat_dir="./video_feature/sent_feature"
+flow_feat_dir="./video_feature/rt_anet_feat/trainval"
 
 echo "---------------------------------------------------------"
 echo ">>>>>>>> Running training on ${dset_name} dataset (C3D + CLIP lang early-concat)"
@@ -30,6 +31,7 @@ time python src/train.py \
     --data_dir ${data_dir} \
     --video_feature_dir ${v_feat_dir} \
     --v_duration_file ${dur_file} \
+    --flow_feature_dir ${flow_feat_dir} \
     --word2idx_path ${word2idx_path} \
     --glove_path ${glove_path} \
     --feature_type c3d \
@@ -38,7 +40,7 @@ time python src/train.py \
     --max_n_sen ${max_n_sen} \
     --max_t_len ${max_t_len} \
     --max_v_len ${max_v_len} \
-    --video_feature_size 2048 \
+    --video_feature_size 3584 \
     --contrastive_weight 0.0 \
     --sent_loss_weight 0.25 \
     --n_epoch 50 \
@@ -58,5 +60,5 @@ time python src/train.py \
     --num_attention_heads 12 \
     --ema_decay 0.9996 \
     --recurrent \
-    --exp_id c3d_lang_early_concat_contrastive \
+    --exp_id c3d_lang_early_concat_contrastive_flow \
     "$@"
