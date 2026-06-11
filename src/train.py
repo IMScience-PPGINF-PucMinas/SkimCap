@@ -614,12 +614,20 @@ def main():
     if opt.glove_path is not None:
         if hasattr(model, "embeddings"):
             logger.info("Load GloVe as word embedding")
-            model.embeddings.set_pretrained_embedding(
-                torch.from_numpy(
-                    torch.load(opt.glove_path, weights_only=True)
-                ).float(),
-                freeze=opt.freeze_glove
+            import numpy.core.multiarray as _npcm
+            _numpy_globals = [
+                _npcm._reconstruct,
+                _npcm.scalar,
+                type(np.dtype("float32")),  # numpy.dtype
+            ]
+            with torch.serialization.safe_globals(_numpy_globals):
+                _glove_raw = torch.load(opt.glove_path, weights_only=True)
+            glove_tensor = (
+                torch.from_numpy(_glove_raw).float()
+                if isinstance(_glove_raw, np.ndarray)
+                else _glove_raw.float()
             )
+            model.embeddings.set_pretrained_embedding(glove_tensor, freeze=opt.freeze_glove)
         else:
             logger.warning("This model has no embeddings, cannot load glove vectors into the model")
 
