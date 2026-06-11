@@ -565,8 +565,13 @@ class RecursiveTransformer(nn.Module):
 
         self.apply(self._init_weights)
 
-        clip_sent_dim = getattr(config, "lang_feature_size", 512) or 512
-        self.sent_proj = nn.Linear(config.hidden_size, clip_sent_dim)
+        # sent_proj and sent_loss_weight are only created when CLIP features are
+        # enabled (lang_feature_size > 0), avoiding unused parameters in the
+        # state_dict when running without CLIP.
+        clip_sent_dim = getattr(config, "lang_feature_size", 0)
+        self.use_sent_loss = clip_sent_dim > 0
+        if self.use_sent_loss:
+            self.sent_proj = nn.Linear(config.hidden_size, clip_sent_dim)
         self.sent_loss_weight = getattr(config, "sent_loss_weight", 0.05)
 
     def _init_weights(self, module: nn.Module) -> None:
@@ -684,14 +689,12 @@ class RecursiveTransformer(nn.Module):
 
             if self.use_contrastive:
                 bos_hidden = encoded_layers[-1][:, self.config.max_v_len, :]  # (N, D)
-                if sent_feats_list is not None:
+                if self.use_sent_loss and sent_feats_list is not None:
                     target_sent = sent_feats_list[idx]
 
                     if target_sent is not None:
 
-                        pred_sent = self.sent_proj(
-                            bos_hidden
-                        )
+                        pred_sent = self.sent_proj(bos_hidden)
 
                         semantic_loss = (
                             1 -
@@ -797,141 +800,3 @@ def _apply_ngram_block(
             blocked_logits[token_id] = float("-inf")
 
     return blocked_logits
-
-
-class Translator:
-    """Autoregressive beam-search decoder for RecursiveTransformer.
-
-    Implements:
-      - Passo 2: n-gram blocking (``no_repeat_ngram_size``)
-      - Passo 3: length penalty  (``length_penalty``, GNMT formula)
-
-    The decoder runs recurrently: memories from step *t* are fed into step
-    *t+1*, mirroring the training-time recurrent forward pass.
-
-    Args:
-        model:                 trained RecursiveTransformer
-        config:                edict with model hyper-parameters
-        beam_size:             number of beams (1 = greedy)
-        max_t_len:             maximum generation length (tokens)
-        no_repeat_ngram_size:  block n-grams of this size (0 = disabled)
-        length_penalty:        α in GNMT length penalty ((5+|Y|)/(5+1))^α
-                               0 = no penalty, 1 = full normalisation
-        bos_idx / eos_idx:     token indices for [BOS] and [EOS]
-        device:                target device
-    """
-
-    def __init__(
-        self,
-        model: RecursiveTransformer,
-        config: edict,
-        beam_size: int = 4,
-        max_t_len: int = 30,
-        no_repeat_ngram_size: int = 3,
-        length_penalty: float = 0.6,
-        bos_idx: int = 4,
-        eos_idx: int = 5,
-        device: Optional[torch.device] = None,
-    ) -> None:
-        self.model = model
-        self.config = config
-        self.beam_size = beam_size
-        self.max_t_len = max_t_len
-        self.no_repeat_ngram_size = no_repeat_ngram_size
-        self.length_penalty = length_penalty
-        self.bos_idx = bos_idx
-        self.eos_idx = eos_idx
-        self.device = device or next(model.parameters()).device
-
-    def _length_penalty_factor(self, length: int) -> float:
-        """GNMT-style length penalty: ((5 + |Y|) / 6) ^ α."""
-        return ((5.0 + length) / 6.0) ** self.length_penalty
-
-    def translate_batch(
-        self,
-        input_ids_list: list[torch.Tensor],
-        video_features_list: list[torch.Tensor],
-        input_masks_list: list[torch.Tensor],
-        token_type_ids_list: list[torch.Tensor],
-        lang_feats_list: Optional[list[Optional[torch.Tensor]]] = None,
-        lang_masks_list: Optional[list[Optional[torch.Tensor]]] = None,
-    ) -> list[list[str]]:
-        """Decode a full paragraph (multiple recurrent steps) for a batch.
-
-        Args:
-            input_ids_list:       [(N, L)] * step_size
-            video_features_list:  [(N, L, D_v)] * step_size
-            input_masks_list:     [(N, L)] * step_size
-            token_type_ids_list:  [(N, L)] * step_size
-            lang_feats_list:      [(N, L, D_lang)] * step_size or None — CLIP language
-                                  features; must match training-time inputs to avoid
-                                  train/inference discrepancy.
-            lang_masks_list:      [(N, L)] * step_size or None
-
-        Returns:
-            List[bsz] of List[step_size] of decoded token-id sequences.
-        """
-        self.model.eval()
-        bsz = input_ids_list[0].size(0)
-        step_size = len(input_ids_list)
-
-        prev_ms: list[Optional[torch.Tensor]] = [None] * self.config.num_hidden_layers
-        coverages: list[Optional[torch.Tensor]] = [None] * self.config.num_hidden_layers
-
-        all_decoded: list[list[list[int]]] = [[[] for _ in range(step_size)] for _ in range(bsz)]
-
-        with torch.no_grad():
-            for step_idx in range(step_size):
-                # Resolve CLIP features for this recurrent step (None-safe).
-                lang_feat = (
-                    lang_feats_list[step_idx]
-                    if lang_feats_list is not None
-                    else None
-                )
-                lang_mask = (
-                    lang_masks_list[step_idx]
-                    if lang_masks_list is not None
-                    else None
-                )
-
-                # Single forward_step call: returns prev_ms, encoded_layers,
-                # prediction_scores and updated coverages — no redundant passes.
-                prev_ms, encoded_layers, prediction_scores, coverages = self.model.forward_step(
-                    prev_ms,
-                    input_ids_list[step_idx],
-                    video_features_list[step_idx],
-                    input_masks_list[step_idx],
-                    token_type_ids_list[step_idx],
-                    coverages=coverages,
-                    lang_features=lang_feat,
-                    lang_mask=lang_mask,
-                )
-
-                text_logits = prediction_scores[:, self.config.max_v_len:, :]  # (N, max_t_len, V)
-
-                decoded_batch: list[list[int]] = [[] for _ in range(bsz)]
-                for pos in range(self.max_t_len):
-                    for b in range(bsz):
-                        if self.eos_idx in decoded_batch[b]:
-                            continue
-                        logits = text_logits[b, pos]  # (V,)
-                        logits = _apply_ngram_block(
-                            decoded_batch[b], logits, self.no_repeat_ngram_size
-                        )
-                        token = logits.argmax(-1).item()
-                        decoded_batch[b].append(int(token))
-
-                for b in range(bsz):
-                    seq = decoded_batch[b]
-                    if self.eos_idx in seq:
-                        seq = seq[: seq.index(self.eos_idx)]
-                    lp = self._length_penalty_factor(max(len(seq), 1))
-                    score = sum(
-                        text_logits[b, t, decoded_batch[b][t]].item()
-                        for t in range(len(decoded_batch[b]))
-                    ) / lp
-                    all_decoded[b][step_idx] = seq
-                    logger.debug("step=%d batch=%d len=%d lp=%.3f score=%.3f",
-                                 step_idx, b, len(seq), lp, score)
-
-        return all_decoded

@@ -77,6 +77,9 @@ class RecursiveCaptionDataset(Dataset):
         self.flow_feature_dir = flow_feature_dir
         self.lang_feature_dir = lang_feature_dir
         self.sent_feature_dir = sent_feature_dir
+        # Cached after first successful lang feature load; used for zero-padding
+        # when a video is missing its lang feature file.
+        self._lang_feature_dim: int = 0
 
         self.mode = mode
         self.recurrent = recurrent
@@ -119,7 +122,10 @@ class RecursiveCaptionDataset(Dataset):
         path = os.path.join(self.lang_feature_dir, name + ".npy")
         if not os.path.exists(path):
             return None
-        return np.load(path).astype(np.float32)
+        feat = np.load(path).astype(np.float32)
+        if self._lang_feature_dim == 0 and feat.ndim >= 2:
+            self._lang_feature_dim = feat.shape[-1]
+        return feat
 
     def _load_duration(self):
         """Load video durations in seconds.
@@ -201,7 +207,7 @@ class RecursiveCaptionDataset(Dataset):
         ed = int(math.ceil((timestamp[1] / duration) * feat_len))
         ed = min(ed, feat_len - 1)
         st = min(st, ed - 1)
-        assert st <= ed <= feat_len, "st {} <= ed {} <= feat_len {}".format(st, ed, feat_len)
+        assert st <= ed < feat_len, "st {} <= ed {} < feat_len {}".format(st, ed, feat_len)
         return st, ed
 
     def __len__(self):
@@ -243,6 +249,8 @@ class RecursiveCaptionDataset(Dataset):
                 self.missing_video_names.append(video_name)
 
             paths_to_check = [self._c3d_path(video_name)]
+            if self.flow_feature_dir is not None:
+                paths_to_check.append(self._flow_path(video_name))
             for p in paths_to_check:
                 if not os.path.exists(p):
                     self.missing_video_names.append(video_name)
@@ -325,10 +333,23 @@ class RecursiveCaptionDataset(Dataset):
 
                 if lang_feat_all is not None and clip_idx < len(lang_feat_all):
                     lang_feat = lang_feat_all[clip_idx]          # (max_v_len, D_lang)
-                    cur_data["lang_feature"] = lang_feat.astype(np.float32)
-                    cur_data["lang_mask"] = cur_data["input_mask"].copy()
+                    # Pad to full sequence length: lang features cover only the video
+                    # positions (max_v_len). Text positions stay zero.
+                    D_lang = lang_feat.shape[-1]
+                    full_lang = np.zeros(
+                        (self.max_v_len + self.max_t_len, D_lang), dtype=np.float32
+                    )
+                    full_lang[:self.max_v_len] = lang_feat
+                    cur_data["lang_feature"] = full_lang
+                    # Mask: 1 only for valid VIDEO positions; text positions are 0
+                    # to avoid injecting zero vectors as meaningful lang embeddings.
+                    video_mask = cur_data["input_mask"].copy()
+                    video_mask[self.max_v_len:] = 0.0
+                    cur_data["lang_mask"] = video_mask
                 else:
-                    D_lang = lang_feat_all.shape[-1] if lang_feat_all is not None else 1
+                    # Fallback: use cached dim from a successfully loaded file,
+                    # or 512 (CLIP ViT-L/16 default). D_lang=1 would crash the MLP.
+                    D_lang = self._lang_feature_dim if self._lang_feature_dim > 0 else 512
                     cur_data["lang_feature"] = np.zeros(
                         (self.max_v_len + self.max_t_len, D_lang), dtype=np.float32
                     )
@@ -643,6 +664,13 @@ def caption_collate(batch):
     padded_batch = []
     padding_clip_sen_data = copy.deepcopy(batch[0][0])
     padding_clip_sen_data["input_labels"][:] = RecursiveCaptionDataset.IGNORE
+    # Zero CLIP features in the padding sample so padded steps carry no
+    # gradient signal from another video's features.
+    for feat_key in ("lang_feature", "sent_feat"):
+        if feat_key in padding_clip_sen_data and isinstance(padding_clip_sen_data[feat_key], np.ndarray):
+            padding_clip_sen_data[feat_key] = np.zeros_like(padding_clip_sen_data[feat_key])
+    if "lang_mask" in padding_clip_sen_data and isinstance(padding_clip_sen_data["lang_mask"], np.ndarray):
+        padding_clip_sen_data["lang_mask"] = np.zeros_like(padding_clip_sen_data["lang_mask"])
     for ele in batch:
         cur_n_sen = len(ele)
         if cur_n_sen < max_n_sen:
@@ -666,4 +694,4 @@ def single_sentence_collate(batch):
                    "gt_sentence": e[1]["sentence"]
                    } for e in batch]
     padded_batch = step_collate([e[0] for e in batch])
-    return padded_batch, None, batch_meta                                                           
+    return padded_batch, None, batch_meta
