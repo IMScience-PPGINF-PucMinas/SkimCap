@@ -53,13 +53,13 @@ time python -X faulthandler src/train.py \
     --batch_size 96 \
     --val_batch_size 96 \
     --max_es_cnt 15 \
-    --num_workers 0 \
+    --num_workers 8 \
     --n_memory_cells 8 \
     --num_hidden_layers 4 \
     --intermediate_size 768 \
     --hidden_size 768 \
     --num_attention_heads 12 \
-    --ema_decay 0.9996 \
+    --ema_decay 0.9999 \
     --recurrent \
-    --exp_id clip_b96_flow_lang_sent \
+    --exp_id clip_b96_fusion \
     "$@"
