@@ -143,7 +143,7 @@ def train_epoch(model, training_data, optimizer, ema, device, opt, writer, epoch
     n_word_total = 0
     n_word_correct = 0
 
-    with torch.autograd.set_detect_anomaly(True):
+    with torch.autograd.set_detect_anomaly(opt.debug):
         for batch_idx, batch in enumerate(tqdm(training_data, mininterval=2,
                                                desc="  Training =>", total=len(training_data))):
             niter = epoch * len(training_data) + batch_idx
@@ -562,7 +562,7 @@ def main():
         data_dir=opt.data_dir, video_feature_dir=opt.video_feature_dir,
         flow_feature_dir=opt.flow_feature_dir, duration_file=opt.v_duration_file,
         word2idx_path=opt.word2idx_path, max_t_len=opt.max_t_len,
-        max_v_len=opt.max_v_len, max_n_sen=opt.max_n_sen+10, mode="val",
+        max_v_len=opt.max_v_len, max_n_sen=opt.max_n_sen, mode="val",
         recurrent=opt.recurrent, untied=opt.untied or opt.mtrans,
         lang_feature_dir=opt.lang_feature_dir,
         sent_feature_dir=opt.sent_feature_dir)
@@ -616,7 +616,7 @@ def main():
             logger.info("Load GloVe as word embedding")
             model.embeddings.set_pretrained_embedding(
                 torch.from_numpy(
-                    torch.load(opt.glove_path, weights_only=False)
+                    torch.load(opt.glove_path, weights_only=True)
                 ).float(),
                 freeze=opt.freeze_glove
             )
