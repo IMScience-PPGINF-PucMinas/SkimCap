@@ -616,9 +616,10 @@ def main():
             logger.info("Load GloVe as word embedding")
             import numpy.core.multiarray as _npcm
             _numpy_globals = [
-                _npcm._reconstruct,
-                _npcm.scalar,
-                type(np.dtype("float32")),  # numpy.dtype
+                np.ndarray,              # the array type itself
+                _npcm._reconstruct,      # reconstruction helper
+                _npcm.scalar,            # scalar values inside the array
+                np.dtype,                # dtype descriptor
             ]
             with torch.serialization.safe_globals(_numpy_globals):
                 _glove_raw = torch.load(opt.glove_path, weights_only=True)
