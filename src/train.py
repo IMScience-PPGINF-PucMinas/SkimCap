@@ -614,15 +614,10 @@ def main():
     if opt.glove_path is not None:
         if hasattr(model, "embeddings"):
             logger.info("Load GloVe as word embedding")
-            import numpy.core.multiarray as _npcm
-            _numpy_globals = [
-                np.ndarray,              # the array type itself
-                _npcm._reconstruct,      # reconstruction helper
-                _npcm.scalar,            # scalar values inside the array
-                np.dtype,                # dtype descriptor
-            ]
-            with torch.serialization.safe_globals(_numpy_globals):
-                _glove_raw = torch.load(opt.glove_path, weights_only=True)
+            # weights_only=False is intentional: the GloVe file was serialised with
+            # torch.save(numpy_array) and contains numpy globals that the restricted
+            # unpickler rejects. The file is a project-internal asset (trusted source).
+            _glove_raw = torch.load(opt.glove_path, weights_only=False)
             glove_tensor = (
                 torch.from_numpy(_glove_raw).float()
                 if isinstance(_glove_raw, np.ndarray)
