@@ -49,6 +49,27 @@ def _prepare_recurrent_batch(batch, device, pin_memory):
     lang_features_list = [e.get("lang_feature") for e in batched_data]
     lang_masks_list    = [e.get("lang_mask")    for e in batched_data]
     sent_feats_list    = [e.get("sent_feat")    for e in batched_data]  # None em val
+
+    if not getattr(_prepare_recurrent_batch, "_clip_verified", False):
+        _prepare_recurrent_batch._clip_verified = True
+        logger.info("[CLIP verify] ── primeiro batch ─────────────────────")
+        for _i, (_lf, _lm, _sf) in enumerate(
+            zip(lang_features_list, lang_masks_list, sent_feats_list)
+        ):
+            _lf_norm  = float(_lf.norm()) if _lf is not None else 0.0
+            _sf_norm  = float(_sf.norm()) if _sf is not None else 0.0
+            _active   = int((_lm > 0).sum()) if _lm is not None else -1
+            logger.info(
+                "[CLIP verify] step %d | lang shape=%s norm=%.3f active=%d %s"
+                " | sent shape=%s norm=%.3f %s",
+                _i,
+                tuple(_lf.shape) if _lf is not None else None, _lf_norm, _active,
+                "OK" if _lf_norm > 0 else "ZERO/NONE",
+                tuple(_sf.shape) if _sf is not None else None, _sf_norm,
+                "OK" if _sf_norm > 0 else "ZERO/NONE",
+            )
+        logger.info("[CLIP verify] ─────────────────────────────────────────")
+
     return (input_ids_list, video_features_list, input_masks_list, token_type_ids_list,
             input_labels_list, lang_features_list, lang_masks_list, sent_feats_list)
 
