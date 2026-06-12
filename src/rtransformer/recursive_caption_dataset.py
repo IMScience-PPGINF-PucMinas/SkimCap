@@ -102,7 +102,7 @@ class RecursiveCaptionDataset(Dataset):
 
         path = os.path.join(
             self.sent_feature_dir,
-            name + ".json"
+            "v_" + name + ".json"
         )
 
         if not os.path.exists(path):
@@ -183,7 +183,7 @@ class RecursiveCaptionDataset(Dataset):
         if not self._ensure_vocab_clip():
             return None
 
-        path = os.path.join(self.lang_feature_dir, name + ".json")
+        path = os.path.join(self.lang_feature_dir, "v_" + name + ".json")
         if not os.path.exists(path):
             logger.warning("[CLIP] lang feature file NOT FOUND: %s", path)
             return None
