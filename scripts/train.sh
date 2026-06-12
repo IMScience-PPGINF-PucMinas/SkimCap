@@ -3,7 +3,7 @@
 dset_name="anet"
 data_dir="/home/lvcardoso/SkimCap/densevid_eval/${dset_name}_data"
 v_feat_dir="./video_feature/cd_anet_feat"
-resnet_feat_dir="./video_feature/resnet200_anet_feat"  # used only with --appearance_feat resnet
+resnet_feat_dir="./video_feature/rt_anet_feat/trainval"  # used only with --appearance_feat resnet
 dur_file="./video_feature/anet_duration_frame.csv"
 word2idx_path="./cache/${dset_name}_word2idx.json"
 glove_path="./cache/${dset_name}_vocab_glove.pt"
@@ -11,9 +11,12 @@ lang_feat_dir="./video_feature/lang_feature"
 sent_feat_dir="./video_feature/sent_feature"
 flow_feat_dir="./video_feature/rt_anet_feat/trainval"
 clip_feat_dir="./cache/${dset_name}_vocab_clip.pt"
+appearance_feat_type="c3d"
+batch=96
+val_batch=${batch}   # pode ser reduzido se beam_size for aumentado
 
 echo "---------------------------------------------------------"
-echo ">>>>>>>> Running training on ${dset_name} dataset (CLIP + batch 128)"
+echo ">>>>>>>> Running training on ${dset_name} dataset (CLIP + batch ${batch})"
 
 if [[ ${dset_name} == "anet" ]]; then
     max_n_sen=6
@@ -39,7 +42,7 @@ time python src/train.py \
     --lang_feature_dir ${lang_feat_dir} \
     --sent_feature_dir ${sent_feat_dir} \
     --vocab_clip_path ${clip_feat_dir} \
-    --appearance_feat c3d \
+    --appearance_feat ${appearance_feat_type} \
     --max_n_sen ${max_n_sen} \
     --max_t_len ${max_t_len} \
     --max_v_len ${max_v_len} \
@@ -54,8 +57,8 @@ time python src/train.py \
     --contrastive_temp 0.10 \
     --contrastive_weight 0.1 \
     --sent_loss_weight 0.15 \
-    --batch_size 96 \
-    --val_batch_size 96 \
+    --batch_size ${batch} \
+    --val_batch_size ${val_batch} \
     --max_es_cnt 15 \
     --num_workers 0 \
     --n_memory_cells 8 \
@@ -65,7 +68,7 @@ time python src/train.py \
     --num_attention_heads 12 \
     --ema_decay 0.9996 \
     --recurrent \
-    --exp_id clip_b96_no_flow \
+    --exp_id ${appearance_feat_type}_clip_b${batch}_no_flow \
     --no_flow \
     "$@"
 
