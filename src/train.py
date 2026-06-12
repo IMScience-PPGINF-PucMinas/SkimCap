@@ -479,6 +479,19 @@ def get_args():
              "build_vocab_clip.py. Required to use lang features.",
     )
 
+    # ── visual backbone selection ─────────────────────────────────────────
+    parser.add_argument(
+        "--appearance_feat", type=str, default="c3d", choices=["c3d", "resnet"],
+        help="Appearance backbone: 'c3d' (fixed 100 clips, v_<name>.npy) or "
+             "'resnet' (variable-length, <name>.npy, auto-resampled to max_v_len). "
+             "--video_feature_dir points to C3D; use --resnet_feature_dir for ResNet.",
+    )
+    parser.add_argument(
+        "--resnet_feature_dir", type=str, default=None,
+        help="Dir containing ResNet-200 feature files (<name>.npy). "
+             "Required when --appearance_feat resnet.",
+    )
+
     # ── ablation switches ─────────────────────────────────────────────────
     parser.add_argument("--no_flow",  action="store_true",
                         help="Disable optical-flow features (ablation)")
@@ -595,7 +608,9 @@ def main():
         vocab_clip_path=opt.vocab_clip_path,
         use_flow=not opt.no_flow,
         use_lang=not opt.no_lang,
-        use_sent=not opt.no_sent)
+        use_sent=not opt.no_sent,
+        appearance_feat=opt.appearance_feat,
+        resnet_feature_dir=opt.resnet_feature_dir)
     val_dataset = RCDataset(
         dset_name=opt.dset_name,
         data_dir=opt.data_dir, video_feature_dir=opt.video_feature_dir,
@@ -608,7 +623,9 @@ def main():
         vocab_clip_path=opt.vocab_clip_path,
         use_flow=not opt.no_flow,
         use_lang=not opt.no_lang,
-        use_sent=not opt.no_sent)
+        use_sent=not opt.no_sent,
+        appearance_feat=opt.appearance_feat,
+        resnet_feature_dir=opt.resnet_feature_dir)
 
     if opt.recurrent:
         collate_fn = caption_collate
@@ -639,8 +656,9 @@ def main():
 
     # Log active ablation config
     logger.info(
-        "[Ablation] flow=%s  lang=%s  sent=%s  video_feature_size=%d",
-        not opt.no_flow, not opt.no_lang, not opt.no_sent, opt.video_feature_size,
+        "[Ablation] backbone=%s  flow=%s  lang=%s  sent=%s  video_feature_size=%d",
+        opt.appearance_feat, not opt.no_flow, not opt.no_lang, not opt.no_sent,
+        opt.video_feature_size,
     )
 
     print(json.dumps(vars(opt), indent=4, sort_keys=True))

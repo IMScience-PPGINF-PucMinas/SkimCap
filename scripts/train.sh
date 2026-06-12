@@ -3,6 +3,7 @@
 dset_name="anet"
 data_dir="/home/lvcardoso/SkimCap/densevid_eval/${dset_name}_data"
 v_feat_dir="./video_feature/cd_anet_feat"
+resnet_feat_dir="./video_feature/resnet200_anet_feat"  # used only with --appearance_feat resnet
 dur_file="./video_feature/anet_duration_frame.csv"
 word2idx_path="./cache/${dset_name}_word2idx.json"
 glove_path="./cache/${dset_name}_vocab_glove.pt"
@@ -38,6 +39,7 @@ time python src/train.py \
     --lang_feature_dir ${lang_feat_dir} \
     --sent_feature_dir ${sent_feat_dir} \
     --vocab_clip_path ${clip_feat_dir} \
+    --appearance_feat c3d \
     --max_n_sen ${max_n_sen} \
     --max_t_len ${max_t_len} \
     --max_v_len ${max_v_len} \
@@ -69,6 +71,10 @@ time python src/train.py \
 
 # ── Ablation examples ────────────────────────────────────────────────────────
 # Adicione os flags abaixo ao comando acima para isolar a contribuição de cada módulo.
+#
+#  --appearance_feat c3d                     backbone C3D (padrão, 100 clips fixos)
+#  --appearance_feat resnet \               backbone ResNet-200 (variável, auto-resample)
+#      --resnet_feature_dir ${resnet_feat_dir}   obrigatório com resnet
 #
 #  --no_flow               sem optical flow (apenas aparência visual)
 #  --no_lang               sem CLIP lang features (por frame)

@@ -64,7 +64,8 @@ class RecursiveCaptionDataset(Dataset):
     def __init__(self, dset_name, data_dir, video_feature_dir, flow_feature_dir, duration_file, word2idx_path,
                  max_t_len, max_v_len, max_n_sen, mode="train", recurrent=True, untied=False,
                  lang_feature_dir=None, sent_feature_dir=None, vocab_clip_path=None,
-                 use_flow=True, use_lang=True, use_sent=True):
+                 use_flow=True, use_lang=True, use_sent=True,
+                 appearance_feat="c3d", resnet_feature_dir=None):
         self.dset_name = dset_name
         self.word2idx = load_json(word2idx_path)
         self.idx2word = {int(v): k for k, v in self.word2idx.items()}
@@ -77,8 +78,19 @@ class RecursiveCaptionDataset(Dataset):
         self.max_n_sen = max_n_sen
 
         self.c3d_feature_dir = video_feature_dir
+        self.resnet_feature_dir = resnet_feature_dir
         self.flow_feature_dir = flow_feature_dir
         self.lang_feature_dir = lang_feature_dir
+
+        # ── appearance feature type ───────────────────────────────────────
+        # 'c3d'    : fixed 100-clip C3D features, file pattern v_<name>.npy
+        # 'resnet' : variable-length ResNet-200 features, file pattern <name>.npy
+#                   resampled to max_v_len via linear interpolation
+        if appearance_feat not in ("c3d", "resnet"):
+            raise ValueError(f"appearance_feat must be 'c3d' or 'resnet', got {appearance_feat!r}")
+        if appearance_feat == "resnet" and resnet_feature_dir is None:
+            raise ValueError("--resnet_feature_dir is required when --appearance_feat resnet")
+        self.appearance_feat = appearance_feat
         self.sent_feature_dir = sent_feature_dir
         self.vocab_clip_path = vocab_clip_path
         # Loaded lazily on first use; dict {word: np.ndarray(D_clip,)}
@@ -242,7 +254,20 @@ class RecursiveCaptionDataset(Dataset):
         self.duration = duration
 
     def _c3d_path(self, video_name: str) -> str:
+        """Path for C3D features: v_<name>.npy under c3d_feature_dir."""
         return os.path.join(self.c3d_feature_dir, "v_{}.npy".format(video_name))
+
+    def _resnet_path(self, video_name: str) -> str:
+        """Path for ResNet-200 features: <name>.npy under resnet_feature_dir."""
+        return os.path.join(self.resnet_feature_dir, "{}.npy".format(video_name))
+
+    def _appearance_path(self, video_name: str) -> str:
+        """Return the correct appearance feature path for the active backbone."""
+        return (
+            self._c3d_path(video_name)
+            if self.appearance_feat == "c3d"
+            else self._resnet_path(video_name)
+        )
 
     def _flow_path(self, video_name: str) -> str:
         return os.path.join(self.flow_feature_dir, "{}_bn.npy".format(video_name))
@@ -284,9 +309,10 @@ class RecursiveCaptionDataset(Dataset):
           appearance-only : (100, 2048)
           appearance+flow : (100, 3072)
         """
-        app = np.load(self._c3d_path(video_name)).astype(np.float32)  # (N, D_app)
+        app = np.load(self._appearance_path(video_name)).astype(np.float32)  # (N, D_app)
 
-        # Resample appearance to max_v_len if needed (ResNet-200 has variable N)
+        # C3D is already exactly max_v_len clips; ResNet-200 is variable-length
+        # and must be resampled to the same coordinate space as lang_feature.
         if app.shape[0] != self.max_v_len:
             app = self._resample_flow(app, target_len=self.max_v_len)
 
@@ -305,8 +331,9 @@ class RecursiveCaptionDataset(Dataset):
         if self.video_feature_size == 0:
             self.video_feature_size = feat.shape[1]
             logger.info(
-                "[Visual] appearance_dim=%d  use_flow=%s  video_feature_size=%d",
-                self._appearance_feat_dim, self.use_flow, self.video_feature_size,
+                "[Visual] backbone=%s  appearance_dim=%d  use_flow=%s  video_feature_size=%d",
+                self.appearance_feat, self._appearance_feat_dim,
+                self.use_flow, self.video_feature_size,
             )
 
         return feat
@@ -373,7 +400,7 @@ class RecursiveCaptionDataset(Dataset):
             if video_name not in self.duration:
                 self.missing_video_names.append(video_name)
 
-            paths_to_check = [self._c3d_path(video_name)]
+            paths_to_check = [self._appearance_path(video_name)]
             for p in paths_to_check:
                 if not os.path.exists(p):
                     self.missing_video_names.append(video_name)
