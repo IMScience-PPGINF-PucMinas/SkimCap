@@ -4,7 +4,6 @@ https://github.com/OpenNMT/OpenNMT-py/blob/master/onmt/translate/beam_search.py
 import torch
 
 from src.rtransformer.decode_strategy import DecodeStrategy, length_penalty_builder
-from src.rtransformer.recursive_caption_dataset import RecursiveCaptionDataset as RCDataset
 
 import logging
 logger = logging.getLogger(__name__)

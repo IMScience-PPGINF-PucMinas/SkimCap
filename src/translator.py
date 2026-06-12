@@ -420,12 +420,19 @@ class Translator(object):
             next_symbols = next_words
         return text_input_ids  # (N, Lt)
 
-    def translate_batch(self, model_inputs, use_beam=False, recurrent=True, untied=False, xl=False, mtrans=False,
-                        lang_feats_list=None, lang_masks_list=None):
-        """while we used *_list as the input names, they could be non-list for single sentence decoding case"""
+    def translate_batch(self, model_inputs, use_beam=False, recurrent=True, untied=False, xl=False, mtrans=False):
+        """Dispatch to the appropriate decoding strategy.
+
+        For recurrent mode, model_inputs is a 7-tuple:
+            (input_ids_list, video_features_list, input_masks_list, token_type_ids_list,
+             lang_feats_list, lang_masks_list, sent_feats_list)
+        lang_feats and lang_masks are used by greedy/beam decoders.
+        sent_feats are used only during training (cosine alignment loss); ignored here.
+        """
         if use_beam:
             if recurrent:
-                input_ids_list, video_features_list, input_masks_list, token_type_ids_list = model_inputs
+                (input_ids_list, video_features_list, input_masks_list, token_type_ids_list,
+                 lang_feats_list, lang_masks_list, sent_feats_list) = model_inputs
                 return self.translate_batch_beam(
                     input_ids_list, video_features_list, input_masks_list, token_type_ids_list,
                     self.model, beam_size=self.opt.beam_size, n_best=self.opt.n_best,
@@ -438,7 +445,8 @@ class Translator(object):
                 raise NotImplementedError
         else:
             if recurrent:
-                input_ids_list, video_features_list, input_masks_list, token_type_ids_list = model_inputs
+                (input_ids_list, video_features_list, input_masks_list, token_type_ids_list,
+                 lang_feats_list, lang_masks_list, sent_feats_list) = model_inputs
                 if xl:
                     return self.translate_batch_greedy_xl(
                         input_ids_list, video_features_list, input_masks_list, token_type_ids_list, self.model)

@@ -20,7 +20,10 @@ import logging
 
 import torch
 from torch.optim import Optimizer
-from torch.optim.optimizer import required
+try:
+    from torch.optim.optimizer import required  # removed in PyTorch ≥2.x
+except ImportError:
+    required = object()  # sentinel — BertAdam always receives an explicit lr
 from torch.nn.utils import clip_grad_norm_
 
 logger = logging.getLogger(__name__)

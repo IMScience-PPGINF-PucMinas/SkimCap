@@ -1,17 +1,19 @@
 import json
-import simplejson
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def save_json(data, filename, save_pretty=False, sort_keys=False):
     with open(filename, "w") as f:
         if save_pretty:
-            f.write(simplejson.dumps(data, indent=4, sort_keys=sort_keys))
+            json.dump(data, f, indent=4, sort_keys=sort_keys)
         else:
-            simplejson.dump(data, f)
+            json.dump(data, f)
 
 
 def save_parsed_args_to_json(parsed_args, file_path, pretty=True):
-    args_dict = vars(parsed_args)
-    save_json(args_dict, file_path, save_pretty=pretty)
+    save_json(vars(parsed_args), file_path, save_pretty=pretty)
 
 
 def load_json(file_path):
@@ -25,50 +27,36 @@ def set_lr(optimizer, decay_factor):
 
 
 def flat_list_of_lists(l):
-    """flatten a list of lists [[1,2], [3,4]] to [1,2,3,4]"""
+    """Flatten [[1, 2], [3, 4]] → [1, 2, 3, 4]."""
     return [item for sublist in l for item in sublist]
 
 
 def count_parameters(model, verbose=True):
-    """Count number of parameters in PyTorch model,
-    References: https://discuss.pytorch.org/t/how-do-i-check-the-number-of-parameters-of-a-model/4325/7.
-
-    from utils.utils import count_parameters
-    count_parameters(model)
-    import sys
-    sys.exit(1)
-    """
-    n_all = sum(p.numel() for p in model.parameters())
-    n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    """Count total and trainable parameters in a PyTorch model."""
+    n_all        = sum(p.numel() for p in model.parameters())
+    n_trainable  = sum(p.numel() for p in model.parameters() if p.requires_grad)
     if verbose:
-        print("Parameter Count: all {:,d}; trainable {:,d}".format(n_all, n_trainable))
+        logger.info(
+            "Parameter Count: all {:,d}; trainable {:,d}".format(n_all, n_trainable)
+        )
     return n_all, n_trainable
 
 
 def sum_parameters(model, verbose=True):
-    """Count number of parameters in PyTorch model,
-    References: https://discuss.pytorch.org/t/how-do-i-check-the-number-of-parameters-of-a-model/4325/7.
-
-    from utils.utils import count_parameters
-    count_parameters(model)
-    import sys
-    sys.exit(1)
-    """
+    """Sum all parameter values (useful as a quick sanity check)."""
     p_sum = sum(p.sum().item() for p in model.parameters())
     if verbose:
-        print("Parameter sum {}".format(p_sum))
+        logger.info("Parameter sum %s", p_sum)
     return p_sum
 
 
 def merge_dicts(list_dicts):
-    merged_dict = list_dicts[0].copy()
-    for i in range(1, len(list_dicts)):
-        merged_dict.update(list_dicts[i])
-    return merged_dict
+    """Merge a list of dicts left-to-right (later keys win)."""
+    merged = list_dicts[0].copy()
+    for d in list_dicts[1:]:
+        merged.update(d)
+    return merged
 
 
 def merge_json_files(paths, merged_path):
-    merged_dict = merge_dicts([load_json(e) for e in paths])
-    save_json(merged_dict, merged_path)
-
-
+    save_json(merge_dicts([load_json(p) for p in paths]), merged_path)

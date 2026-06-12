@@ -15,7 +15,6 @@ from torch import nn
 from torch.nn import functional as F
 
 import math
-import numpy as np
 from src.rtransformer.model import LabelSmoothingLoss
 
 
@@ -172,9 +171,9 @@ class Encoder(nn.Module):
         x = self.video_embeddings(x)  # (N, Lv, D)
         x = x + positional_encodings_like(x)
         x = self.dropout(x)
-        mask.unsqueeze_(-1)
         if mask is not None:
-            x = x*mask
+            mask = mask.unsqueeze(-1)  # (N, Lv, 1) — non-mutating
+            x = x * mask
         encoding = []
         for layer in self.layers:
             x = layer(x)
