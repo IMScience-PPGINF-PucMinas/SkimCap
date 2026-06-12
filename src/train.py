@@ -296,7 +296,9 @@ def _write_epoch_logs(log_train_file, log_valid_file, epoch_i,
             b=val_greedy_output["Bleu_4"] * 100,
             c=val_greedy_output["CIDEr"] * 100,
             r=val_greedy_output["re4"] * 100,
-            d=val_greedy_output.get("Div2", 0.0)))
+            d=val_greedy_output.get("Div2", 0.0)* 100
+        )
+    )
 
 def train(model, training_data, validation_data, device, opt):
     model = model.to(device)
