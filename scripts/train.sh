@@ -68,8 +68,10 @@ time python src/train.py \
     --num_attention_heads 12 \
     --ema_decay 0.9996 \
     --recurrent \
-    --exp_id ${appearance_feat_type}_clip_b${batch}_no_flow \
+    --exp_id ${appearance_feat_type}_no_clip_b${batch}_no_flow \
     --no_flow \
+    --no_lang \
+    --no_sent \
     "$@"
 
 # ── Ablation examples ────────────────────────────────────────────────────────
