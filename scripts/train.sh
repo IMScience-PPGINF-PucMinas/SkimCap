@@ -38,6 +38,7 @@ time python src/train.py \
     --flow_feature_dir ${flow_feat_dir} \
     --v_duration_file ${dur_file} \
     --word2idx_path ${word2idx_path} \
+    --resnet_feature_dir ${resnet_feat_dir} \
     --glove_path ${glove_path} \
     --lang_feature_dir ${lang_feat_dir} \
     --sent_feature_dir ${sent_feat_dir} \
