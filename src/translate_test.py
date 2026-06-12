@@ -67,7 +67,7 @@ def run_translate(eval_data_loader, translator, opt):
                     batch_res["results"][cur_meta["name"]].append({
                         "sentence": eval_data_loader.dataset.convert_ids_to_sentence(
                             step_batch[example_idx].cpu().tolist()
-                        ).encode("ascii", "ignore"),
+                        ).encode("ascii", "ignore").decode("ascii"),
                         "timestamp":   cur_meta["timestamp"][step_idx],
                         "gt_sentence": cur_meta["gt_sentence"][step_idx],
                     })
@@ -100,7 +100,7 @@ def run_translate(eval_data_loader, translator, opt):
                 batch_res["results"][cur_meta["name"]].append({
                     "sentence": eval_data_loader.dataset.convert_ids_to_sentence(
                         cur_gen_sen.cpu().tolist()
-                    ).encode("ascii", "ignore"),
+                    ).encode("ascii", "ignore").decode("ascii"),
                     "timestamp":   cur_meta["timestamp"],
                     "gt_sentence": cur_meta["gt_sentence"],
                 })
