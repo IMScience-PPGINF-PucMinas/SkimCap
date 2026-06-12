@@ -9,13 +9,14 @@ glove_path="./cache/${dset_name}_vocab_glove.pt"
 lang_feat_dir="./video_feature/lang_feature"
 sent_feat_dir="./video_feature/sent_feature"
 flow_feat_dir="./video_feature/rt_anet_feat/trainval"
+clip_feat_dir="./cache/${dset_name}_vocab_clip.pt"
 
 echo "---------------------------------------------------------"
 echo ">>>>>>>> Running training on ${dset_name} dataset (CLIP + batch 128)"
 
 if [[ ${dset_name} == "anet" ]]; then
     max_n_sen=6
-    max_t_len=32
+    max_t_len=22
     max_v_len=100
 elif [[ ${dset_name} == "yc2" ]]; then
     max_n_sen=12
@@ -36,6 +37,7 @@ time python -X faulthandler src/train.py \
     --glove_path ${glove_path} \
     --lang_feature_dir ${lang_feat_dir} \
     --sent_feature_dir ${sent_feat_dir} \
+    --vocab_clip_path ${clip_feat_dir} \
     --max_n_sen ${max_n_sen} \
     --max_t_len ${max_t_len} \
     --max_v_len ${max_v_len} \
@@ -53,13 +55,13 @@ time python -X faulthandler src/train.py \
     --batch_size 96 \
     --val_batch_size 96 \
     --max_es_cnt 15 \
-    --num_workers 8 \
+    --num_workers 0 \
     --n_memory_cells 8 \
     --num_hidden_layers 4 \
     --intermediate_size 768 \
     --hidden_size 768 \
     --num_attention_heads 12 \
-    --ema_decay 0.9999 \
+    --ema_decay 0.9996 \
     --recurrent \
-    --exp_id clip_b96_fusion \
+    --exp_id clip_b96_flow_lang_sent \
     "$@"

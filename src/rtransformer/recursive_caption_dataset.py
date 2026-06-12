@@ -61,7 +61,8 @@ class RecursiveCaptionDataset(Dataset):
     IGNORE = -1  # used to calculate loss
 
     def __init__(self, dset_name, data_dir, video_feature_dir, flow_feature_dir, duration_file, word2idx_path,
-                 max_t_len, max_v_len, max_n_sen, mode="train", recurrent=True, untied=False, lang_feature_dir=None, sent_feature_dir=None,):
+                 max_t_len, max_v_len, max_n_sen, mode="train", recurrent=True, untied=False,
+                 lang_feature_dir=None, sent_feature_dir=None, vocab_clip_path=None):
         self.dset_name = dset_name
         self.word2idx = load_json(word2idx_path)
         self.idx2word = {int(v): k for k, v in self.word2idx.items()}
@@ -77,8 +78,10 @@ class RecursiveCaptionDataset(Dataset):
         self.flow_feature_dir = flow_feature_dir
         self.lang_feature_dir = lang_feature_dir
         self.sent_feature_dir = sent_feature_dir
-        # Cached after first successful lang feature load; used for zero-padding
-        # when a video is missing its lang feature file.
+        self.vocab_clip_path = vocab_clip_path
+        # Loaded lazily on first use; dict {word: np.ndarray(D_clip,)}
+        self._vocab_clip: dict | None = None
+        # Inferred from vocab_clip on first lookup; used for zero-padding
         self._lang_feature_dim: int = 0
 
         self.mode = mode
@@ -110,21 +113,94 @@ class RecursiveCaptionDataset(Dataset):
             return None
         return np.asarray(feat, dtype=np.float32)
 
-    def _load_lang_feature(self, name):
-        """Load CLIP language features for all segments of a video.
+    # ── vocab_clip helpers ─────────────────────────────────────────────────────
 
-        Expected file: <lang_feature_dir>/<video_name>.npy
-        Shape: (num_segments, max_v_len, clip_lang_dim)
-        Returns None if the directory is not set or the file is missing.
+    def _ensure_vocab_clip(self) -> bool:
+        """Lazily load vocab_clip.pt on first call.
+
+        Returns True when the vocab is ready, False when unavailable so that
+        callers can degrade gracefully without raising.
+        """
+        if self._vocab_clip is not None:
+            return True
+        if self.vocab_clip_path is None or not os.path.exists(self.vocab_clip_path):
+            logger.warning(
+                "[CLIP] vocab_clip not available (path=%s) — lang features DISABLED",
+                self.vocab_clip_path,
+            )
+            return False
+        self._vocab_clip = torch.load(self.vocab_clip_path, weights_only=False)
+        sample = next(iter(self._vocab_clip.values()))
+        self._lang_feature_dim = int(np.asarray(sample).shape[-1])
+        logger.info(
+            "[CLIP] vocab_clip loaded: %d words, D=%d  (%s)",
+            len(self._vocab_clip), self._lang_feature_dim, self.vocab_clip_path,
+        )
+        return True
+
+    def _tokens_to_embed(self, tokens: list[str]) -> np.ndarray:
+        """Average the CLIP embeddings of a list of vocab tokens.
+
+        Tokens not found in the vocab are silently skipped.  If *all* tokens
+        are OOV the zero vector is returned.
+
+        Args:
+            tokens: list of word strings (e.g. top-k from one frame)
+
+        Returns:
+            (D_clip,) float32 L2-normalised embedding
+        """
+        vecs = [
+            np.asarray(self._vocab_clip[t], dtype=np.float32)
+            for t in tokens
+            if t in self._vocab_clip
+        ]
+        if not vecs:
+            return np.zeros(self._lang_feature_dim, dtype=np.float32)
+        avg = np.mean(vecs, axis=0)
+        norm = np.linalg.norm(avg)
+        return (avg / norm).astype(np.float32) if norm > 0 else avg
+
+    # ── lang feature loader ────────────────────────────────────────────────────
+
+    def _load_lang_feature(self, name):
+        """Load CLIP language features for the full video.
+
+        Reads a JSON file of shape (N_frames, K_tokens) produced by
+        VLTinT's extract_lang_feat.py, converts each frame's top-K token list
+        to a dense L2-normalised CLIP embedding via vocab_clip.pt, and returns
+        a (N_frames, D_clip) float32 array covering the **whole video**.
+
+        Segmentation into per-clip windows is handled later in
+        _index_lang_feature, which mirrors the st/ed slicing done for
+        video_feature in _load_indexed_video_feature.
+
+        Returns None when the feature directory or vocab are unavailable.
         """
         if self.lang_feature_dir is None:
+            logger.debug("[CLIP] lang_feature_dir not set — lang features DISABLED")
             return None
-        path = os.path.join(self.lang_feature_dir, name + ".npy")
+        if not self._ensure_vocab_clip():
+            return None
+
+        path = os.path.join(self.lang_feature_dir, name + ".json")
         if not os.path.exists(path):
+            logger.warning("[CLIP] lang feature file NOT FOUND: %s", path)
             return None
-        feat = np.load(path).astype(np.float32)
-        if self._lang_feature_dim == 0 and feat.ndim >= 2:
-            self._lang_feature_dim = feat.shape[-1]
+
+        with open(path) as f:
+            raw = json.load(f)          # list[N_frames][K_tokens]
+
+        # raw[i] = top-K vocab words for frame i
+        feat = np.stack(
+            [self._tokens_to_embed(frame_tokens) for frame_tokens in raw],
+            axis=0,
+        ).astype(np.float32)             # (N_frames, D_clip)
+
+        logger.debug(
+            "[CLIP] Loaded lang feature for %s — shape %s  norm[0]=%.4f",
+            name, feat.shape, float(np.linalg.norm(feat[0])),
+        )
         return feat
 
     def _load_duration(self):
@@ -207,7 +283,7 @@ class RecursiveCaptionDataset(Dataset):
         ed = int(math.ceil((timestamp[1] / duration) * feat_len))
         ed = min(ed, feat_len - 1)
         st = min(st, ed - 1)
-        assert st <= ed < feat_len, "st {} <= ed {} < feat_len {}".format(st, ed, feat_len)
+        assert st <= ed <= feat_len, "st {} <= ed {} <= feat_len {}".format(st, ed, feat_len)
         return st, ed
 
     def __len__(self):
@@ -249,8 +325,6 @@ class RecursiveCaptionDataset(Dataset):
                 self.missing_video_names.append(video_name)
 
             paths_to_check = [self._c3d_path(video_name)]
-            if self.flow_feature_dir is not None:
-                paths_to_check.append(self._flow_path(video_name))
             for p in paths_to_check:
                 if not os.path.exists(p):
                     self.missing_video_names.append(video_name)
@@ -330,30 +404,42 @@ class RecursiveCaptionDataset(Dataset):
                     sent_feat = sent_feat_all[clip_idx]
                 if sent_feat is not None:
                     cur_data["sent_feat"] = sent_feat.astype(np.float32)
-
-                if lang_feat_all is not None and clip_idx < len(lang_feat_all):
-                    lang_feat = lang_feat_all[clip_idx]          # (max_v_len, D_lang)
-                    # Pad to full sequence length: lang features cover only the video
-                    # positions (max_v_len). Text positions stay zero.
-                    D_lang = lang_feat.shape[-1]
-                    full_lang = np.zeros(
-                        (self.max_v_len + self.max_t_len, D_lang), dtype=np.float32
+                    logger.debug(
+                        "[CLIP] clip %d — sent_feat shape=%s norm=%.4f",
+                        clip_idx, sent_feat.shape, float(np.linalg.norm(sent_feat)),
                     )
-                    full_lang[:self.max_v_len] = lang_feat
-                    cur_data["lang_feature"] = full_lang
-                    # Mask: 1 only for valid VIDEO positions; text positions are 0
-                    # to avoid injecting zero vectors as meaningful lang embeddings.
-                    video_mask = cur_data["input_mask"].copy()
-                    video_mask[self.max_v_len:] = 0.0
-                    cur_data["lang_mask"] = video_mask
                 else:
-                    # Fallback: use cached dim from a successfully loaded file,
-                    # or 512 (CLIP ViT-L/16 default). D_lang=1 would crash the MLP.
+                    logger.debug("[CLIP] clip %d — sent_feat unavailable", clip_idx)
+
+                if lang_feat_all is not None:
+                    # lang_feat_all is (N_frames, D_clip) — the whole video.
+                    # Slice to this segment using the same st/ed logic as
+                    # _load_indexed_video_feature so temporal alignment is exact.
+                    video_name_local = example["name"][2:] if self.dset_name == "anet" else example["name"]
+                    duration_local = self.duration[video_name_local]
+                    lang_feat, lang_mask = self._index_lang_feature(
+                        lang_feat_all,
+                        example["timestamps"][clip_idx],
+                        duration_local,
+                    )
+                    cur_data["lang_feature"] = lang_feat          # (max_v+max_t, D)
+                    cur_data["lang_mask"] = lang_mask              # video-only mask
+                    logger.debug(
+                        "[CLIP] clip %d — lang_feat norm=%.4f active_tokens=%d",
+                        clip_idx,
+                        float(np.linalg.norm(lang_feat)),
+                        int(lang_mask.sum()),
+                    )
+                else:
                     D_lang = self._lang_feature_dim if self._lang_feature_dim > 0 else 512
                     cur_data["lang_feature"] = np.zeros(
                         (self.max_v_len + self.max_t_len, D_lang), dtype=np.float32
                     )
                     cur_data["lang_mask"] = np.zeros_like(cur_data["input_mask"])
+                    logger.debug(
+                        "[CLIP] clip %d — lang_feat unavailable, zero-padded (D=%d)",
+                        clip_idx, D_lang,
+                    )
 
                 single_video_features.append(cur_data)
                 single_video_meta.append(cur_meta)
@@ -543,6 +629,51 @@ class RecursiveCaptionDataset(Dataset):
 
         return feat, mask
 
+    def _index_lang_feature(
+        self,
+        raw_lang: np.ndarray,
+        timestamp: list,
+        duration: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Slice a full-video lang feature array to a single segment window.
+
+        Mirrors _load_indexed_video_feature exactly:
+        - Computes st/ed frame indices from timestamp and duration.
+        - Downsamples when the segment is longer than max_v_l.
+        - Packs result into (max_v_len + max_t_len, D) with zero-padding.
+        - Returns a matching video-position mask (1 = valid CLIP frame, 0 = pad).
+
+        Args:
+            raw_lang:  (N_frames, D_clip) float32 — full video lang feature
+            timestamp: [t_start, t_end] in seconds
+            duration:  total video duration in seconds
+
+        Returns:
+            lang_feat: (max_v_len + max_t_len, D_clip) zero-padded
+            lang_mask: (max_v_len + max_t_len,) float32  (1 at valid VID pos, 0 elsewhere)
+        """
+        max_v_l = self.max_v_len - 2        # slots for actual VID tokens
+        feat_len = len(raw_lang)
+        D = raw_lang.shape[1]
+        full_len = self.max_v_len + self.max_t_len
+
+        st, ed = self._convert_to_feat_index_st_ed(feat_len, timestamp, duration)
+        indexed_len = ed - st + 1
+
+        lang_feat = np.zeros((full_len, D), dtype=np.float32)
+        lang_mask = np.zeros(full_len, dtype=np.float32)
+
+        if indexed_len > max_v_l:
+            indices = np.linspace(st, ed, max_v_l, endpoint=True).astype(int)
+            lang_feat[1:max_v_l + 1] = raw_lang[indices]
+            lang_mask[1:max_v_l + 1] = 1.0      # CLS=0, valid VID=1, SEP+text=0
+        else:
+            valid_l = indexed_len
+            lang_feat[1:valid_l + 1] = raw_lang[st:ed + 1]
+            lang_mask[1:valid_l + 1] = 1.0
+
+        return lang_feat, lang_mask
+
     @staticmethod
     def _sinusoidal_pe(position: float, dim: int) -> np.ndarray:
         """Scalar sinusoidal encoding for a single normalised position in [0, 1]."""
@@ -666,9 +797,9 @@ def caption_collate(batch):
     padding_clip_sen_data["input_labels"][:] = RecursiveCaptionDataset.IGNORE
     # Zero CLIP features in the padding sample so padded steps carry no
     # gradient signal from another video's features.
-    for feat_key in ("lang_feature", "sent_feat"):
-        if feat_key in padding_clip_sen_data and isinstance(padding_clip_sen_data[feat_key], np.ndarray):
-            padding_clip_sen_data[feat_key] = np.zeros_like(padding_clip_sen_data[feat_key])
+    for _feat_key in ("lang_feature", "sent_feat"):
+        if _feat_key in padding_clip_sen_data and isinstance(padding_clip_sen_data[_feat_key], np.ndarray):
+            padding_clip_sen_data[_feat_key] = np.zeros_like(padding_clip_sen_data[_feat_key])
     if "lang_mask" in padding_clip_sen_data and isinstance(padding_clip_sen_data["lang_mask"], np.ndarray):
         padding_clip_sen_data["lang_mask"] = np.zeros_like(padding_clip_sen_data["lang_mask"])
     for ele in batch:
