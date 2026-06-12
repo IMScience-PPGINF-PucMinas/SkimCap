@@ -24,7 +24,7 @@ from src.rtransformer.optimization import BertAdam, EMA
 from src.translator import Translator
 from src.translate import run_translate
 from src.utils import save_parsed_args_to_json, save_json, load_json, \
-    count_parameters, merge_dicts
+    count_parameters, merge_dicts, compute_div2
 from easydict import EasyDict as EDict
 from tensorboardX import SummaryWriter
 import logging
@@ -258,6 +258,9 @@ def eval_language_metrics(checkpoint, eval_data_loader, opt, model=None, eval_mo
     metric_filepaths = [lang_filepath, stat_filepath, rep_filepath]
     all_metrics = merge_dicts([load_json(e) for e in metric_filepaths])
 
+    # Div@2 is computed directly from predictions (no external script needed)
+    all_metrics["Div2"] = compute_div2(json_res)
+
     all_metrics_filepath = res_filepath.replace(".json", "_all_metrics.json")
     save_json(all_metrics, all_metrics_filepath, save_pretty=True)
     return all_metrics, [res_filepath, all_metrics_filepath]
@@ -274,7 +277,7 @@ def _setup_log_files(opt):
 
     with open(log_train_file, "w") as log_tf, open(log_valid_file, "w") as log_vf:
         log_tf.write("epoch,loss,ppl,accuracy\n")
-        log_vf.write("epoch,loss,ppl,accuracy,METEOR,BLEU@4,CIDEr,re4\n")
+        log_vf.write("epoch,loss,ppl,accuracy,METEOR,BLEU@4,CIDEr,re4,Div2\n")
 
     return log_train_file, log_valid_file
 
@@ -286,13 +289,14 @@ def _write_epoch_logs(log_train_file, log_valid_file, epoch_i,
         log_tf.write("{epoch},{loss: 8.5f},{ppl: 8.5f},{acc:3.3f}\n".format(
             epoch=epoch_i, loss=train_loss,
             ppl=math.exp(min(train_loss, 100)), acc=100 * train_acc))
-        log_vf.write("{epoch},{loss: 8.5f},{ppl: 8.5f},{acc:3.3f},{m:.2f},{b:.2f},{c:.2f},{r:.2f}\n".format(
+        log_vf.write("{epoch},{loss: 8.5f},{ppl: 8.5f},{acc:3.3f},{m:.2f},{b:.2f},{c:.2f},{r:.2f},{d:.4f}\n".format(
             epoch=epoch_i, loss=val_loss,
             ppl=math.exp(min(val_loss, 100)), acc=100 * val_acc,
             m=val_greedy_output["METEOR"] * 100,
             b=val_greedy_output["Bleu_4"] * 100,
             c=val_greedy_output["CIDEr"] * 100,
-            r=val_greedy_output["re4"] * 100))
+            r=val_greedy_output["re4"] * 100,
+            d=val_greedy_output.get("Div2", 0.0)))
 
 def train(model, training_data, validation_data, device, opt):
     model = model.to(device)
@@ -359,16 +363,19 @@ def train(model, training_data, validation_data, device, opt):
 
         val_greedy_output, filepaths = eval_language_metrics(
             checkpoint, validation_data, opt, eval_mode="val", model=model)
-        cider = val_greedy_output["CIDEr"]
-        bleu4 = val_greedy_output["Bleu_4"]
+        cider  = val_greedy_output["CIDEr"]
+        bleu4  = val_greedy_output["Bleu_4"]
         meteor = val_greedy_output["METEOR"]
-        r4 = val_greedy_output["re4"]
-        logger.info("[Val] METEOR {m:.2f} Bleu@4 {b:.2f} CIDEr {c:.2f} re4 {r:.2f}"
-                    .format(m=meteor * 100, b=bleu4 * 100, c=cider * 100, r=r4 * 100))
+        r4     = val_greedy_output["re4"]
+        div2   = val_greedy_output.get("Div2", 0.0)
+        logger.info(
+            "[Val] METEOR {m:.2f} Bleu@4 {b:.2f} CIDEr {c:.2f} re4 {r:.2f} Div@2 {d:.4f}"
+            .format(m=meteor*100, b=bleu4*100, c=cider*100, r=r4*100, d=div2))
         writer.add_scalar("Val/METEOR", meteor * 100, niter)
         writer.add_scalar("Val/Bleu_4", bleu4 * 100, niter)
         writer.add_scalar("Val/CIDEr", cider * 100, niter)
-        writer.add_scalar("Val/Re4", r4 * 100, niter)
+        writer.add_scalar("Val/Re4",  r4   * 100, niter)
+        writer.add_scalar("Val/Div2", div2 * 100, niter)
 
         if opt.save_mode == "all":
             model_name = opt.save_model + "_e{e}_b{b}_c{c}_r{r}.chkpt".format(
