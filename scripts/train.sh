@@ -16,7 +16,7 @@ echo ">>>>>>>> Running training on ${dset_name} dataset (CLIP + batch 128)"
 
 if [[ ${dset_name} == "anet" ]]; then
     max_n_sen=6
-    max_t_len=22
+    max_t_len=32
     max_v_len=100
 elif [[ ${dset_name} == "yc2" ]]; then
     max_n_sen=12
@@ -27,7 +27,7 @@ else
     exit 1
 fi
 
-time python -X faulthandler src/train.py \
+time python src/train.py \
     --dset_name ${dset_name} \
     --data_dir ${data_dir} \
     --video_feature_dir ${v_feat_dir} \
@@ -65,3 +65,15 @@ time python -X faulthandler src/train.py \
     --recurrent \
     --exp_id clip_b96_flow_lang_sent \
     "$@"
+
+# ── Ablation examples ────────────────────────────────────────────────────────
+# Adicione os flags abaixo ao comando acima para isolar a contribuição de cada módulo.
+#
+#  --no_flow               sem optical flow (apenas aparência visual)
+#  --no_lang               sem CLIP lang features (por frame)
+#  --no_sent               sem CLIP sent features (alinhamento semântico)
+#  --no_lang --no_sent     baseline sem CLIP
+#  --no_flow --no_lang --no_sent   equivalente ao MART original
+#
+# video_feature_size é calculado automaticamente — não precisa ser alterado.
+# ─────────────────────────────────────────────────────────────────────────────

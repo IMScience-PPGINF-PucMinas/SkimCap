@@ -63,7 +63,8 @@ class RecursiveCaptionDataset(Dataset):
 
     def __init__(self, dset_name, data_dir, video_feature_dir, flow_feature_dir, duration_file, word2idx_path,
                  max_t_len, max_v_len, max_n_sen, mode="train", recurrent=True, untied=False,
-                 lang_feature_dir=None, sent_feature_dir=None, vocab_clip_path=None):
+                 lang_feature_dir=None, sent_feature_dir=None, vocab_clip_path=None,
+                 use_flow=True, use_lang=True, use_sent=True):
         self.dset_name = dset_name
         self.word2idx = load_json(word2idx_path)
         self.idx2word = {int(v): k for k, v in self.word2idx.items()}
@@ -84,6 +85,20 @@ class RecursiveCaptionDataset(Dataset):
         self._vocab_clip: dict | None = None
         # Inferred from vocab_clip on first lookup; used for zero-padding
         self._lang_feature_dim: int = 0
+
+        # ── ablation flags ────────────────────────────────────────────────
+        # use_flow: include optical-flow (BN-Inception) features
+        # use_lang: include CLIP per-frame linguistic features
+        # use_sent: include CLIP sentence alignment features
+        self.use_flow = use_flow and (flow_feature_dir is not None)
+        self.use_lang = use_lang and (lang_feature_dir is not None)
+        self.use_sent = use_sent and (sent_feature_dir is not None)
+
+        # Derived visual feature dimensionality — used by train.py to set
+        # rt_config.video_feature_size automatically.
+        # Appearance dim is detected on first load; flow always adds 1024.
+        self._appearance_feat_dim: int = 0
+        self.video_feature_size: int = 0   # set after first _load_video_feature call
 
         self.mode = mode
         self.recurrent = recurrent
@@ -252,16 +267,49 @@ class RecursiveCaptionDataset(Dataset):
         return f(x_tgt).astype(np.float32)
 
     def _load_video_feature(self, video_name: str) -> np.ndarray:
-        """Load and concatenate C3D + flow features for the full video.
+        """Load and assemble visual features for the full video.
 
-        C3D  : (N, 2048) — used as-is
-        Flow : (M, 1024) — resampled to (N, 1024)
-        Output: (N, 3072) float32
+        Appearance feature (C3D or ResNet-200):
+          - C3D    : (N, 2048) — fixed 100 clips, used as-is
+          - ResNet : (N_r, 2048) — variable length, resampled to 100 clips
+
+        Flow (BN-Inception), only when use_flow=True:
+          - (M, 1024) — resampled to match appearance length
+
+        The resampling target is always max_v_len (100) so that downstream
+        _load_indexed_video_feature and _index_lang_feature operate on the
+        same coordinate space.
+
+        Output dims (auto-computed and stored in self.video_feature_size):
+          appearance-only : (100, 2048)
+          appearance+flow : (100, 3072)
         """
-        c3d = np.load(self._c3d_path(video_name)).astype(np.float32)   # (N, 2048)
-        flow = np.load(self._flow_path(video_name))                     # (M, 1024)
-        flow_resampled = self._resample_flow(flow, target_len=c3d.shape[0])
-        return np.concatenate([c3d, flow_resampled], axis=1)            # (N, 3072)
+        app = np.load(self._c3d_path(video_name)).astype(np.float32)  # (N, D_app)
+
+        # Resample appearance to max_v_len if needed (ResNet-200 has variable N)
+        if app.shape[0] != self.max_v_len:
+            app = self._resample_flow(app, target_len=self.max_v_len)
+
+        # Cache appearance dim on first load
+        if self._appearance_feat_dim == 0:
+            self._appearance_feat_dim = app.shape[1]
+
+        if self.use_flow:
+            flow = np.load(self._flow_path(video_name))               # (M, 1024)
+            flow = self._resample_flow(flow, target_len=self.max_v_len)
+            feat = np.concatenate([app, flow], axis=1)                # (100, D_app+1024)
+        else:
+            feat = app                                                 # (100, D_app)
+
+        # Keep video_feature_size in sync for train.py to read
+        if self.video_feature_size == 0:
+            self.video_feature_size = feat.shape[1]
+            logger.info(
+                "[Visual] appearance_dim=%d  use_flow=%s  video_feature_size=%d",
+                self._appearance_feat_dim, self.use_flow, self.video_feature_size,
+            )
+
+        return feat
 
     @classmethod
     def _convert_to_feat_index_st_ed(cls, feat_len: int, timestamp: list, duration: float) -> tuple:
@@ -388,8 +436,8 @@ class RecursiveCaptionDataset(Dataset):
             single_video_features = []
             single_video_meta = []
 
-            sent_feat_all = self._load_sent_feature(video_name)
-            lang_feat_all = self._load_lang_feature(video_name)  # (num_seg, max_v_len, D_lang) or None
+            sent_feat_all = self._load_sent_feature(video_name) if self.use_sent else None
+            lang_feat_all = self._load_lang_feature(video_name) if self.use_lang else None
 
             for clip_idx in range(num_sen):
                 cur_data, cur_meta = self.clip_sentence_to_feature(
