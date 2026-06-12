@@ -173,7 +173,7 @@ class Translator(object):
                         break
 
                 if any_beam_is_finished:
-                    select_indices = beam.current_origin  # N * B
+                    select_indices = beam.current_origin  # N_new * beam_size
                     input_ids = input_ids.index_select(0, select_indices)
                     video_features = video_features.index_select(0, select_indices)
                     input_masks = input_masks.index_select(0, select_indices)
@@ -187,6 +187,11 @@ class Translator(object):
                         c.index_select(0, select_indices) if c is not None else None
                         for c in tiled_coverages
                     ]
+                    # Reindex CLIP features — batch dim shrinks as beams finish
+                    if tiled_lang_feat is not None:
+                        tiled_lang_feat = tiled_lang_feat.index_select(0, select_indices)
+                    if tiled_lang_mask is not None:
+                        tiled_lang_mask = tiled_lang_mask.index_select(0, select_indices)
 
             # fill in generated words from beam best hypothesis
             for batch_idx in range(len(beam.predictions)):
