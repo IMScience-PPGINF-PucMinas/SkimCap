@@ -11,7 +11,7 @@ lang_feat_dir="./video_feature/lang_feature"
 sent_feat_dir="./video_feature/sent_feature"
 flow_feat_dir="./video_feature/rt_anet_feat/trainval"
 clip_feat_dir="./cache/${dset_name}_vocab_clip.pt"
-appearance_feat_type="c3d"
+appearance_feat_type="resnet"
 batch=96
 val_batch=${batch}   # pode ser reduzido se beam_size for aumentado
 
@@ -68,7 +68,7 @@ time python src/train.py \
     --num_attention_heads 12 \
     --ema_decay 0.9996 \
     --recurrent \
-    --exp_id ${appearance_feat_type}_no_clip_b${batch}_no_flow \
+    --exp_id ${appearance_feat_type}_no_clip_b${batch}_no_flow_resnet \
     --no_flow \
     --no_lang \
     --no_sent \
