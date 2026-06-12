@@ -58,5 +58,39 @@ def merge_dicts(list_dicts):
     return merged
 
 
+
+def compute_div2(json_res):
+    """Compute 2-gram diversity (Div@2) over a prediction JSON.
+
+    For each video, measures the fraction of unique bigrams over all bigrams
+    across its generated sentences — a paragraph-level lexical diversity score.
+    The final score is the macro-average over all videos.
+
+    Div@2 = mean over videos of:
+        |unique bigrams in paragraph| / max(|total bigrams in paragraph|, 1)
+
+    Args:
+        json_res: prediction dict with structure
+            {"results": {video_id: [{"sentence": str, ...}, ...]}}
+
+    Returns:
+        float in [0, 1]; higher = more diverse vocabulary across sentences.
+    """
+    scores = []
+    for video_id, preds in json_res["results"].items():
+        bigrams_total  = []
+        bigrams_unique = set()
+        for pred in preds:
+            sentence = pred.get("sentence", "")
+            if isinstance(sentence, bytes):
+                sentence = sentence.decode("ascii", "ignore")
+            tokens = sentence.lower().split()
+            grams  = list(zip(tokens[:-1], tokens[1:]))
+            bigrams_total.extend(grams)
+            bigrams_unique.update(grams)
+        denom = max(len(bigrams_total), 1)
+        scores.append(len(bigrams_unique) / denom)
+    return float(sum(scores) / len(scores)) if scores else 0.0
+
 def merge_json_files(paths, merged_path):
     save_json(merge_dicts([load_json(p) for p in paths]), merged_path)
