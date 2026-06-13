@@ -69,8 +69,7 @@ time python src/train.py \
     --num_attention_heads 12 \
     --ema_decay 0.9996 \
     --recurrent \
-    --exp_id ${appearance_feat_type}_no_clip_b${batch}_no_flow_resnet \
-    --no_flow \
+    --exp_id ${appearance_feat_type}_no_clip_b${batch}_flow_no_clip \
     --no_lang \
     --no_sent \
     "$@"
