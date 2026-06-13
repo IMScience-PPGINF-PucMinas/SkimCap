@@ -20,7 +20,7 @@ echo ">>>>>>>> Running training on ${dset_name} dataset (CLIP + batch ${batch})"
 
 if [[ ${dset_name} == "anet" ]]; then
     max_n_sen=6
-    max_t_len=32
+    max_t_len=22
     max_v_len=100
 elif [[ ${dset_name} == "yc2" ]]; then
     max_n_sen=12
@@ -69,7 +69,7 @@ time python src/train.py \
     --num_attention_heads 12 \
     --ema_decay 0.9996 \
     --recurrent \
-    --exp_id ${appearance_feat_type}_no_clip_b${batch}_flow_clip \
+    --exp_id ${appearance_feat_type}_b${batch}_flow_clip \
     "$@"
 
 # ── Ablation examples ────────────────────────────────────────────────────────
