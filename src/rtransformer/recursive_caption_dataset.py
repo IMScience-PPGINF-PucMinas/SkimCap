@@ -394,20 +394,56 @@ class RecursiveCaptionDataset(Dataset):
         self._load_data(data_path)
 
     def fix_missing(self):
-        """Filter out videos whose C3D or flow feature file is missing."""
+        """Filter out videos whose appearance (or flow) feature file is missing."""
+        # ── early sanity check for ResNet dir ────────────────────────────────
+        if self.appearance_feat == "resnet":
+            if self.resnet_feature_dir is None:
+                raise ValueError("appearance_feat='resnet' but resnet_feature_dir is None")
+            if not os.path.isdir(self.resnet_feature_dir):
+                raise ValueError(
+                    f"resnet_feature_dir does not exist or is not a directory: "
+                    f"{self.resnet_feature_dir!r}"
+                )
+            # Log a sample of files in the dir so mismatches are immediately visible
+            sample_files = os.listdir(self.resnet_feature_dir)[:5]
+            logger.info(
+                "[ResNet] resnet_feature_dir=%r  (sample files: %s)",
+                self.resnet_feature_dir, sample_files,
+            )
+
+        n_before = len(self.data)
+        missing_duration = []
+        missing_feat = []
+
         for e in tqdm(self.data):
             video_name = e["name"][2:] if self.dset_name == "anet" else e["name"]
             if video_name not in self.duration:
+                missing_duration.append(video_name)
+                self.missing_video_names.append(video_name)
+                continue
+
+            app_path = self._appearance_path(video_name)
+            if not os.path.exists(app_path):
+                missing_feat.append(app_path)
                 self.missing_video_names.append(video_name)
 
-            paths_to_check = [self._appearance_path(video_name)]
-            for p in paths_to_check:
-                if not os.path.exists(p):
-                    self.missing_video_names.append(video_name)
-            
-        logger.info("Missing {} features (clips/sentences) from {} videos".format(
-            len(self.missing_video_names), len(set(self.missing_video_names))))
-        logger.info("Missing {}".format(set(self.missing_video_names)))
+        if missing_duration:
+            logger.warning(
+                "[fix_missing] %d videos not found in duration file (first 5: %s)",
+                len(missing_duration), missing_duration[:5],
+            )
+        if missing_feat:
+            logger.warning(
+                "[fix_missing] %d appearance files not found (first 5: %s)",
+                len(missing_feat), missing_feat[:5],
+            )
+
+        logger.info(
+            "[fix_missing] backbone=%s  before=%d  missing=%d  kept=%d",
+            self.appearance_feat, n_before,
+            len(set(self.missing_video_names)),
+            n_before - len(set(self.missing_video_names)),
+        )
         if self.dset_name == "anet":
             self.data = [e for e in self.data if e["name"][2:] not in self.missing_video_names]
         else:
