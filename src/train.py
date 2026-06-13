@@ -371,8 +371,8 @@ def train(model, training_data, validation_data, device, opt):
         r4     = val_greedy_output["re4"]
         div2   = val_greedy_output.get("Div2", 0.0)
         logger.info(
-            "[Val] METEOR {m:.2f} Bleu@4 {b:.2f} CIDEr {c:.2f} re4 {r:.2f} Div@2 {d:.4f}"
-            .format(m=meteor*100, b=bleu4*100, c=cider*100, r=r4*100, d=div2))
+            "[Val] METEOR {m:.2f} Bleu@4 {b:.2f} CIDEr {c:.2f} re4 {r:.2f} Div@2 {d:.2f}"
+            .format(m=meteor*100, b=bleu4*100, c=cider*100, r=r4*100, d=div2*100))
         writer.add_scalar("Val/METEOR", meteor * 100, niter)
         writer.add_scalar("Val/Bleu_4", bleu4 * 100, niter)
         writer.add_scalar("Val/CIDEr", cider * 100, niter)
