@@ -258,8 +258,8 @@ class RecursiveCaptionDataset(Dataset):
         return os.path.join(self.c3d_feature_dir, "v_{}.npy".format(video_name))
 
     def _resnet_path(self, video_name: str) -> str:
-        """Path for ResNet-200 features: <name>.npy under resnet_feature_dir."""
-        return os.path.join(self.resnet_feature_dir, "{}.npy".format(video_name))
+        """Path for ResNet-200 features: <name>_resnet.npy under resnet_feature_dir."""
+        return os.path.join(self.resnet_feature_dir, "{}_resnet.npy".format(video_name))
 
     def _appearance_path(self, video_name: str) -> str:
         """Return the correct appearance feature path for the active backbone."""
