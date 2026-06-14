@@ -133,6 +133,8 @@ def get_data_loader(opt, eval_mode="val"):
         use_flow=not getattr(opt, "no_flow", False),
         use_lang=not getattr(opt, "no_lang", False),
         use_sent=not getattr(opt, "no_sent", False),
+        appearance_feat=getattr(opt, "appearance_feat", "c3d"),
+        resnet_feature_dir=getattr(opt, "resnet_feature_dir", None),
     )
     collate_fn = caption_collate if opt.recurrent else single_sentence_collate
     return DataLoader(
@@ -147,6 +149,15 @@ def main():
     parser.add_argument("--eval_splits", type=str, nargs="+", default=["val"],
                         choices=["val", "test"],
                         help="evaluate on val/test set (yc2 only has val)")
+    parser.add_argument("--dset_name", type=str, default=None,
+                        choices=["anet", "yc2"],
+                        help="dataset name; overrides checkpoint value. E.g. --dset_name anet")
+    parser.add_argument("--appearance_feat", type=str, default=None,
+                        choices=["c3d", "resnet"],
+                        help="visual backbone: 'c3d' or 'resnet'; overrides checkpoint value")
+    parser.add_argument("--resnet_feature_dir", type=str, default=None,
+                        help="dir containing ResNet-200 feature files (<name>.npy). "
+                             "Required when --appearance_feat resnet; overrides checkpoint value.")
     parser.add_argument("--res_dir", required=True,
                         help="path to dir containing model checkpoints")
     parser.add_argument("--checkpoint", type=str, default="model.chkpt",
@@ -189,11 +200,25 @@ def main():
 
     checkpoint = torch.load(chkpt_path, weights_only=False)
 
-    # Merge train-time options (without overwriting inference-time ones)
+    # Merge train-time options (without overwriting inference-time ones).
+    # CLI args with default=None are treated as "not supplied" and filled
+    # from the checkpoint so they transparently propagate to inference.
     train_opt = checkpoint["opt"]
     for k in train_opt.__dict__:
-        if k not in opt.__dict__:
+        if k not in opt.__dict__ or getattr(opt, k) is None:
             setattr(opt, k, getattr(train_opt, k))
+
+    # Validate that critical fields are now resolved
+    if not getattr(opt, "dset_name", None):
+        raise ValueError("dset_name not resolved. Pass --dset_name anet|yc2.")
+    if not getattr(opt, "appearance_feat", None):
+        raise ValueError("appearance_feat not resolved. Pass --appearance_feat c3d|resnet.")
+    if opt.appearance_feat == "resnet" and not getattr(opt, "resnet_feature_dir", None):
+        raise ValueError("--resnet_feature_dir required when --appearance_feat resnet.")
+    logger.info(
+        "dset_name: %s  |  appearance_feat: %s  |  resnet_feature_dir: %s",
+        opt.dset_name, opt.appearance_feat, getattr(opt, "resnet_feature_dir", None),
+    )
 
     decoding_strategy = (
         "beam{}_lp_{}_la_{}".format(
