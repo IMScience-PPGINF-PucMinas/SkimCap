@@ -12,7 +12,7 @@ sent_feat_dir="./video_feature/sent_feature"
 flow_feat_dir="./video_feature/rt_anet_feat/trainval"
 clip_feat_dir="./cache/${dset_name}_vocab_clip.pt"
 appearance_feat_type="c3d"
-batch=96
+batch=88
 val_batch=${batch}   # pode ser reduzido se beam_size for aumentado
 
 echo "---------------------------------------------------------"
