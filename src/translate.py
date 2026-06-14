@@ -149,7 +149,7 @@ def main():
                         help="evaluate on val/test set (yc2 only has val)")
     parser.add_argument("--res_dir", required=True,
                         help="path to dir containing model checkpoints")
-    parser.add_argument("--checkpoint", type=str, default=None,
+    parser.add_argument("--checkpoint", type=str, default="model.chkpt",
                         help="checkpoint filename inside res_dir (default: model.chkpt). "
                              "E.g. --checkpoint model_epoch_05.chkpt")
     parser.add_argument("--batch_size", type=int, default=100)
