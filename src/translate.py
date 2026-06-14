@@ -148,7 +148,10 @@ def main():
                         choices=["val", "test"],
                         help="evaluate on val/test set (yc2 only has val)")
     parser.add_argument("--res_dir", required=True,
-                        help="path to dir containing model.chkpt")
+                        help="path to dir containing model checkpoints")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="checkpoint filename inside res_dir (default: model.chkpt). "
+                             "E.g. --checkpoint model_epoch_05.chkpt")
     parser.add_argument("--batch_size", type=int, default=100)
 
     # beam search
@@ -174,9 +177,17 @@ def main():
     np.random.seed(opt.seed)
     torch.manual_seed(opt.seed)
 
-    checkpoint = torch.load(
-        os.path.join(opt.res_dir, "model.chkpt"), weights_only=False
-    )
+    chkpt_filename = opt.checkpoint if opt.checkpoint else "model.chkpt"
+    chkpt_path = os.path.join(opt.res_dir, chkpt_filename)
+    if not os.path.isfile(chkpt_path):
+        raise FileNotFoundError("Checkpoint not found: {}".format(chkpt_path))
+    logger.info("Loading checkpoint: %s", chkpt_path)
+
+    # Stem used to namespace all output files for this checkpoint,
+    # e.g. "model_epoch_05.chkpt" -> "model_epoch_05"
+    chkpt_stem = os.path.splitext(chkpt_filename)[0]
+
+    checkpoint = torch.load(chkpt_path, weights_only=False)
 
     # Merge train-time options (without overwriting inference-time ones)
     train_opt = checkpoint["opt"]
@@ -191,7 +202,7 @@ def main():
         if opt.use_beam else "greedy"
     )
     save_json(vars(opt),
-              os.path.join(opt.res_dir, "{}_eval_cfg.json".format(decoding_strategy)),
+              os.path.join(opt.res_dir, "{}_{}_eval_cfg.json".format(chkpt_stem, decoding_strategy)),
               save_pretty=True)
 
     if opt.dset_name == "anet":
@@ -214,7 +225,7 @@ def main():
         translator = Translator(opt, checkpoint)
 
         pred_file = os.path.abspath(
-            os.path.join(opt.res_dir, "{}_pred_{}.json".format(decoding_strategy, eval_mode))
+            os.path.join(opt.res_dir, "{}_{}_pred_{}.json".format(chkpt_stem, decoding_strategy, eval_mode))
         )
         if not os.path.exists(pred_file):
             json_res = run_translate(eval_data_loader, translator, opt=opt)
