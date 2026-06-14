@@ -19,7 +19,7 @@ from src.rtransformer.recursive_caption_dataset import (
     single_sentence_collate,
     prepare_batch_inputs,
 )
-from src.utils import load_json, merge_dicts, save_json
+from src.utils import load_json, merge_dicts, save_json, compute_div2
 
 logger = logging.getLogger(__name__)
 
@@ -232,10 +232,12 @@ def main():
             save_json(json_res, pred_file, save_pretty=True)
         else:
             logger.info("Using existing prediction file at %s", pred_file)
+            json_res = load_json(pred_file)
 
         lang_file     = pred_file.replace(".json", "_lang.json")
         stat_filepath = pred_file.replace(".json", "_stat.json")
         rep_filepath  = pred_file.replace(".json", "_rep.json")
+        div2_filepath = pred_file.replace(".json", "_div2.json")
 
         subprocess.call(
             ["python", "para-evaluate.py", "-s", pred_file, "-o", lang_file, "-v", "-r"]
@@ -253,7 +255,11 @@ def main():
             cwd=opt.eval_tool_dir,
         )
 
-        all_metrics = merge_dicts([load_json(p) for p in [lang_file, stat_filepath, rep_filepath]])
+        div2_score = compute_div2(json_res)
+        save_json({"Div@2": round(div2_score, 4)}, div2_filepath, save_pretty=True)
+        logger.info("Div@2: %.4f", div2_score)
+
+        all_metrics = merge_dicts([load_json(p) for p in [lang_file, stat_filepath, rep_filepath, div2_filepath]])
         save_json(all_metrics, pred_file.replace(".json", "_all_metrics.json"), save_pretty=True)
 
         logger.info("pred_file %s  lang_file %s", pred_file, lang_file)
