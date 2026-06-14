@@ -31,7 +31,7 @@ else
     exit 1
 fi
 
-exp_id="${appearance_feat_type}_b${batch}_flow_clip_mtl_${max_t_len}"
+exp_id="${appearance_feat_type}_b${batch}_no_flow_clip_mtl_${max_t_len}"
 
 time python src/train.py \
     --dset_name ${dset_name} \
@@ -71,6 +71,7 @@ time python src/train.py \
     --num_attention_heads 12 \
     --ema_decay 0.9996 \
     --recurrent \
+    --no_flow \
     --exp_id ${exp_id} \
     "$@"
 
