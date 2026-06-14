@@ -6,7 +6,7 @@ checkpoint=$3
 python src/translate.py \
 --res_dir=${res_dir} \
 --eval_splits=${split_name} \
---checkpoint=${checkpoint}
+--checkpoint=${checkpoint} \
 --use_beam \
 --beam_size 2 \
 ${@:3}
