@@ -481,7 +481,6 @@ class BertPredictionHeadTransform(nn.Module):
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         return self.LayerNorm(gelu(self.dense(hidden_states)))
 
-
 class BertLMPredictionHead(nn.Module):
     def __init__(
         self,
@@ -752,7 +751,6 @@ def _get_ngrams(sequence: list[int], n: int) -> set[tuple[int, ...]]:
     """Return the set of all n-grams in *sequence*."""
     return {tuple(sequence[i: i + n]) for i in range(len(sequence) - n + 1)}
 
-
 def _apply_ngram_block(
     hyp_ids: list[int],
     logits: torch.Tensor,
@@ -780,7 +778,6 @@ def _apply_ngram_block(
             blocked_logits[token_id] = float("-inf")
 
     return blocked_logits
-
 
 class Translator:
     """Autoregressive beam-search decoder for RecursiveTransformer.
