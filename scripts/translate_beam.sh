@@ -2,7 +2,7 @@
 split_name=$1
 res_dir=$2
 checkpoint=$3
-app_feat="resnet"
+app_feat="c3d"
 shift 3   # consume the 3 positional args; "$@" now holds only extra flags
 
 python src/translate.py \
